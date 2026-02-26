@@ -403,15 +403,25 @@ def attach_dual_picker(fe: FileEdit, button: QtWidgets.QPushButton) -> None:
 
 
 def attach_dir_picker(fe: FileEdit, button: QtWidgets.QPushButton) -> None:
-    """Attach a direct folder picker: clicking the button opens directory dialog."""
+    """Attach a direct folder picker: clicking the button opens directory dialog with a Select Folder button."""
 
     def pick_dir() -> None:
         start = as_path_str(fe.value).strip() or os.path.expanduser("~")
-        path = QtWidgets.QFileDialog.getExistingDirectory(
-            button, "Select folder", start
-        )
-        if path:
-            fe.value = path
+        dialog = QtWidgets.QFileDialog(button, "Select folder", start)
+        dialog.setFileMode(QtWidgets.QFileDialog.Directory)
+        dialog.setOption(QtWidgets.QFileDialog.ShowDirsOnly, True)
+        dialog.setLabelText(QtWidgets.QFileDialog.Accept, "Select Folder")
+        dialog.setLabelText(QtWidgets.QFileDialog.Reject, "Cancel")
+
+        # Ensure the dialog is fully initialized and refreshed
+        dialog.open()
+        dialog.repaint()
+
+        if dialog.exec_() == QtWidgets.QFileDialog.Accepted:
+            selected_folder = dialog.selectedFiles()[0]
+            fe.value = selected_folder  # Explicitly set the selected folder
+        else:
+            show_error("No folder selected. Please try again.")
 
     button.clicked.connect(pick_dir)
 
