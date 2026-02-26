@@ -61,8 +61,22 @@ class RSMNapariViewer:
         self._corner_labels_layer = None  # restored (even if unused)
 
     # ------------------------------ public ------------------------------------
-    def launch(self) -> napari.Viewer:
-        v = napari.Viewer(title=f"{self.name} viewer", **self.viewer_kwargs)
+    def launch(self, viewer: napari.Viewer | None = None) -> napari.Viewer:
+        """Launch into a new Napari viewer or reuse the provided `viewer`.
+
+        If `viewer` is None a new `napari.Viewer` is created; otherwise layers
+        are added to the supplied viewer.
+        """
+        v = viewer or napari.Viewer(
+            title=f"{self.name} viewer", **self.viewer_kwargs
+        )
+        # If reusing an existing viewer, clear its current layers first so the
+        # new visualization replaces the previous content.
+        if viewer is not None:
+            with contextlib.suppress(Exception):
+                for _ly in list(v.layers):
+                    with contextlib.suppress(Exception):
+                        v.layers.remove(_ly)
         v.dims.ndisplay = 3
         data = self._log1p_clip(self.volume) if self.log_view else self.volume
         lo, hi = self._robust_percentiles(data, self.contrast_percentiles)
@@ -109,7 +123,7 @@ class RSMNapariViewer:
 
         self.viewer = v
         self.img_layer = layer
-        return self
+        return v
 
     def add_grid_overlay(
         self,
@@ -616,9 +630,21 @@ class IntensityNapariViewer:
         self._roi_label_points = None
         self._roi_data_callback = None
 
-    def launch(self) -> napari.Viewer:
-        v = napari.Viewer(title=self._name)
+    def launch(self, viewer: napari.Viewer | None = None) -> napari.Viewer:
+        """Launch into a new Napari viewer or reuse the provided `viewer`.
+
+        If `viewer` is None a new `napari.Viewer` is created; otherwise layers
+        are added to the supplied viewer.
+        """
+        v = viewer or napari.Viewer(title=self._name)
         self._viewer = v
+        # If reusing a provided viewer, clear its layers so intensity replaces
+        # any existing content in the current viewer.
+        if viewer is not None:
+            with contextlib.suppress(Exception):
+                for _ly in list(v.layers):
+                    with contextlib.suppress(Exception):
+                        v.layers.remove(_ly)
         data = self._prepare(self._raw_tyx)
         finite = data[np.isfinite(data)]
         lo, hi = (

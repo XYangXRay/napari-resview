@@ -916,7 +916,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
                 add_volume=True,
                 scale_tzyx=(1.0, 1.0, 1.0),
                 pad_value=np.nan,
-            ).launch()
+            ).launch(viewer=self.viewer)
             self._state["intensity_viewer"] = viewer_local
         except (RuntimeError, ValueError, TypeError) as e:
             show_error(f"Failed to open intensity viewer: {e}")
@@ -1119,7 +1119,8 @@ class ResviewDockWidget(QtWidgets.QWidget):
                 cmap=self.cmap_w.value,
                 rendering=self.rendering_w.value,
             )
-            viz.launch()
+            viewer_local = viz.launch(viewer=self.viewer)
+            self._state["rsm_viewer"] = viewer_local
             self.set_progress(100, busy=False)
             self.status("RSM viewer opened.")
         except (RuntimeError, ValueError, TypeError) as e:
