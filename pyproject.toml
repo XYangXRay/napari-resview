@@ -23,7 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.14"
 # napari can be included in dependencies if napari imports are required.
 # However, you should not include napari[all], napari[qt],
 # or any other Qt bindings directly (e.g. PyQt5, PySide2).
@@ -31,14 +31,27 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "magicgui",
+    "xrayutilities==1.7.10",
     "qtpy",
     "scikit-image",
+    "h5py",
+    "hdf5plugin",
+    "pyyaml>=6.0.3",
+    "qtpy>=2.4.3",
+    "pyside6>=6.8",
+    "pyqt6",
+    "magicgui>=0.10.1",
+    "vtk>=9.0.0",
+    "pandas>=2.3.3",
+    "dask>=2024.8.0",
+    "pyarrow>=21.0.0",
 ]
 
 [project.optional-dependencies]
 # Allow easily installation with the full, default napari installation
 # (including Qt backend) using napari-resview[all].
 all = ["napari[all]"]
+    testing = []
 
 [dependency-groups]
 dev = [
@@ -47,6 +60,7 @@ dev = [
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "napari[qt]",  # test with napari's default Qt bindings
+
 ]
 
 [project.entry-points."napari.manifest"]
@@ -103,6 +117,7 @@ lint.select = [
     "SIM", # flake8-simplify
 ]
 lint.ignore = [
+    "UP035",
     "E501", # line too long. let black handle this
     "UP006", "UP007", # type annotation. As using magicgui require runtime type annotation then we disable this.
 ]
@@ -129,3 +144,27 @@ exclude = [
     "*_vendor*",
 ]
 fix = true
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[tool.pixi.pypi-dependencies]
+napari-resview = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+all = { features = ["all"], solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+testing = { features = ["testing"], solve-group = "default" }
+
+[tool.pixi.tasks]
+
+[tool.pixi.feature.dev.pypi-dependencies]
+napari-resview = { path = ".", editable = true, extras = ["dev"] }
+
+[tool.pixi.feature.dev.tasks]
+napari = "napari"
+
+[tool.pixi.dependencies]
+ruff = ">=0.15.2,<0.16"

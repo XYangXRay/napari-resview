@@ -1,0 +1,46 @@
+data:
+  spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
+  tiff_dir: /Users/xiaogangyang/BNL.GOV Dropbox/Xiaogang Yang/isr_rsm3d/setup_6oct23_tiff_1017_tmp
+  scans: '18'
+  only_hkl: false
+  data_file: /Users/xiaogangyang/data/isr_rsm3d/data_6oct23_tiff
+ExperimentSetup:
+  distance: 0.78105
+  pitch: 7.5e-05
+  ycenter: 257
+  xcenter: 515
+  xpixels: 1030
+  ypixels: 514
+  energy: 11.9
+  wavelength: null
+build:
+  ub_includes_2pi: true
+  center_is_one_based: null
+  sample_axes: z-, y+, x+
+  detector_axes: z-
+crop:
+  enable: false
+  y_min: 120
+  y_max: 510
+  x_min: 380
+  x_max: 610
+regrid:
+  space: hkl
+  grid_shape: 100,*,*
+  fuzzy: true
+  fuzzy_width: null
+  normalize: null
+view:
+  log_view: true
+  cmap: plasma
+  rendering: null
+  contrast_lo: 1.2000000000000002
+  contrast_hi: 99.8
+export:
+  vtr_path: /Users/xiaogangyang/data_tmp/rsm3d_test
+Crystal:
+  ub: '1 0 0
+
+    0 1 0
+
+    0 0 1'
