@@ -47,13 +47,8 @@ class RSMDataLoader:
         self.selected_scans = selected_scans
 
     def load(self):
-        exp = SpecParser(self.spec_file, self.setup_file)
-        setup = exp.setup
-
-        df_meta = exp.to_pandas()
-        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
-        df_meta["data_number"] = df_meta["data_number"].astype(int)
-
+        # Normalize selected scans early so we can pass selection to the
+        # SpecParser and avoid parsing irrelevant scans.
         selected_list: list[int] = []
         wanted: set[int] | None = None
         if self.selected_scans is not None:
@@ -65,9 +60,36 @@ class RSMDataLoader:
                 except TypeError:
                     selected_list = [int(self.selected_scans)]
             wanted = set(selected_list)
-            df_meta = df_meta[df_meta["scan_number"].isin(wanted)]
-            if df_meta.empty:
+
+        exp = SpecParser(
+            self.spec_file,
+            self.setup_file,
+            selected_scans=selected_list or None,
+        )
+        setup = exp.setup
+
+        df_meta = exp.to_pandas()
+        # If parsing produced no metadata rows, bail out with a clear message.
+        if df_meta.empty:
+            if wanted is not None:
                 raise ValueError("No metadata rows match selected_scans.")
+            raise ValueError("No metadata rows found in SPEC file.")
+
+        # Normalize numeric columns after confirming presence.
+        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
+        df_meta["data_number"] = df_meta["data_number"].astype(int)
+
+        # If a selection was provided, ensure metadata contains at least one requested scan.
+        if wanted is not None:
+            available = sorted(
+                set(df_meta["scan_number"].astype(int).tolist())
+            )
+            wanted_list = sorted(int(s) for s in wanted)
+            if not df_meta["scan_number"].isin(wanted).any():
+                raise ValueError(
+                    f"No metadata rows match selected_scans={wanted_list}. "
+                    f"Available scans in SPEC: {available}"
+                )
 
         # 2. Load TIFF frames
         rd = ReadFrame(self.tiff_dir, use_dask=self.use_dask)
