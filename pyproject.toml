@@ -86,7 +86,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["napari_resview*"]
+include = ["napari_resview*", "rsm3d*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml"]
