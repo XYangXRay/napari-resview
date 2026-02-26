@@ -6,58 +6,12 @@ visibility: public
 # categories: []
 contributions:
   commands:
-    - id: napari-resview.get_reader
-      python_name: napari_resview._reader:napari_get_reader
-      title: Open data with Resview
-    - id: napari-resview.write_multiple
-      python_name: napari_resview._writer:write_multiple
-      title: Save multi-layer data with Resview
-    - id: napari-resview.write_single_image
-      python_name: napari_resview._writer:write_single_image
-      title: Save image data with Resview
-    - id: napari-resview.make_sample_data
-      python_name: napari_resview._sample_data:make_sample_data
-      title: Load sample data from Resview
-    - id: napari-resview.make_container_widget
-      python_name: napari_resview:ImageThreshold
-      title: Make threshold Container widget
-    - id: napari-resview.make_magic_widget
-      python_name: napari_resview:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: napari-resview.make_function_widget
-      python_name: napari_resview:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: napari-resview.make_qwidget
-      python_name: napari_resview:ExampleQWidget
-      title: Make example QWidget
-  readers:
-    - command: napari-resview.get_reader
-      accepts_directories: false
-      filename_patterns: ['*.npy']
-  writers:
-    - command: napari-resview.write_multiple
-      layer_types: ['image*','labels*']
-      filename_extensions: []
-    - command: napari-resview.write_single_image
-      layer_types: ['image']
-      filename_extensions: ['.npy']
-  sample_data:
-    - command: napari-resview.make_sample_data
-      display_name: Resview
-      key: unique_id.1
+    - id: napari-resview.make_resview_widget
+      python_name: napari_resview.resview_widget:ResviewDockWidget
+      title: Resview
   widgets:
-    - command: napari-resview.make_container_widget
-      display_name: Container Threshold
-    - command: napari-resview.make_magic_widget
-      display_name: Magic Threshold
-    - command: napari-resview.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: napari-resview.make_qwidget
-      display_name: Example QWidget
+    - command: napari-resview.make_resview_widget
+      display_name: Resview
   menus:
     napari/layers/segment:
-      - command: napari-resview.make_container_widget
-      - command: napari-resview.make_magic_widget
-      - command: napari-resview.make_function_widget
-      - command: napari-resview.make_qwidget
+      - command: napari-resview.make_resview_widget
