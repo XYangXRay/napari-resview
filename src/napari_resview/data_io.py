@@ -20,7 +20,7 @@ except ImportError:
 
 import contextlib
 
-from rsm3d.spec_parser import SpecParser
+from .spec_parser import SpecParser
 
 
 class RSMDataLoader:

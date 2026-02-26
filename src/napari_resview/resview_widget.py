@@ -37,9 +37,9 @@ from napari.utils.notifications import show_error
 from napari.viewer import Viewer
 from qtpy import QtCore, QtGui, QtWidgets
 
-from rsm3d.data_io import RSMDataLoader, write_rsm_volume_to_vtr
-from rsm3d.data_viz import IntensityNapariViewer, RSMNapariViewer
-from rsm3d.rsm3d import RSMBuilder
+from .data_io import RSMDataLoader, write_rsm_volume_to_vtr
+from .data_viz import IntensityNapariViewer, RSMNapariViewer
+from .rsm3d import RSMBuilder
 
 # -----------------------------------------------------------------------------
 # App styling / icon
@@ -697,7 +697,11 @@ class ResviewDockWidget(QtWidgets.QWidget):
             if icon is not None:
                 self.btn_run_all_native.setIcon(icon)
                 self.btn_run_all_native.setIconSize(QtCore.QSize(20, 20))
-        # Connect the button to the on_run_all handler
+        # Button connection handled later to ensure single connection
+
+        # Ensure the button is connected only once to avoid duplicate execution
+        with contextlib.suppress(TypeError):
+            self.btn_run_all_native.clicked.disconnect()
         self.btn_run_all_native.clicked.connect(self.on_run_all)
 
         left_bottom = QtWidgets.QWidget()
@@ -819,7 +823,6 @@ class ResviewDockWidget(QtWidgets.QWidget):
         self.btn_regrid.clicked.connect(self.on_regrid)
         self.btn_view.clicked.connect(self.on_view)
         self.btn_export.clicked.connect(self.on_export_vtk)
-        self.btn_run_all_native.clicked.connect(self.on_run_all)
 
     # -------------------------------------------------------------------------
     # YAML helpers (no blind exceptions)

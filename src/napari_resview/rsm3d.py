@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from collections.abc import Sequence
 from typing import Tuple, Union
 

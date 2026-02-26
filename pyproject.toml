@@ -51,7 +51,14 @@ dependencies = [
 # Allow easily installation with the full, default napari installation
 # (including Qt backend) using napari-resview[all].
 all = ["napari[all]"]
-    testing = []
+
+testing = [
+    "tox",
+    "pytest",  # https://docs.pytest.org/en/latest/contents.html
+    "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
+    "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
+    "napari[qt]",  # test with napari's default Qt bindings
+]
 
 [dependency-groups]
 dev = [
@@ -86,7 +93,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["napari_resview*", "rsm3d*"]
+include = ["napari_resview*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml"]
@@ -171,7 +178,3 @@ napari-resview = { path = ".", editable = true, extras = ["dev"] }
 
 [tool.pixi.feature.dev.tasks]
 napari = "napari"
-
-[tool.pixi.dependencies]
-ruff = ">=0.15.2,<0.16"
-tox = ">=4.46.3,<5"
