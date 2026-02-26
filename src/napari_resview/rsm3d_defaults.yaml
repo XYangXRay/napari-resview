@@ -1,7 +1,7 @@
 data:
   spec_file: /Users/xiaogangyang/data/isr_rsm3d/FeTe_GeTe_101525
   tiff_dir: /Users/xiaogangyang/BNL.GOV Dropbox/Xiaogang Yang/isr_rsm3d/setup_6oct23_tiff_1017_tmp
-  scans: '1'
+  scans: '21'
   only_hkl: false
   data_file: /Users/xiaogangyang/data/isr_rsm3d/Oct_22_2025/tiff
 ExperimentSetup:

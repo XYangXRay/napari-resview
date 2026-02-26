@@ -109,9 +109,8 @@ def try_apply_app_icon() -> None:
     if icon is None:
         return
     app = QtWidgets.QApplication.instance()
-    if app is None:
-        return
-    app.setWindowIcon(icon)
+    if app is not None:
+        app.setStyleSheet(APP_QSS + RUN_ALL_QSS)
 
 
 # -----------------------------------------------------------------------------
@@ -390,6 +389,9 @@ def attach_dual_picker(fe: FileEdit, button: QtWidgets.QPushButton) -> None:
         )
         if path:
             fe.value = path
+            print(f"Folder selected: {path}")  # Debugging log
+        else:
+            print("No folder selected.")  # Debugging log
 
     act_file.triggered.connect(pick_file)
     act_dir.triggered.connect(pick_dir)
@@ -398,6 +400,20 @@ def attach_dual_picker(fe: FileEdit, button: QtWidgets.QPushButton) -> None:
         menu.exec_(button.mapToGlobal(QtCore.QPoint(0, button.height())))
 
     button.clicked.connect(on_click)
+
+
+def attach_dir_picker(fe: FileEdit, button: QtWidgets.QPushButton) -> None:
+    """Attach a direct folder picker: clicking the button opens directory dialog."""
+
+    def pick_dir() -> None:
+        start = as_path_str(fe.value).strip() or os.path.expanduser("~")
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            button, "Select folder", start
+        )
+        if path:
+            fe.value = path
+
+    button.clicked.connect(pick_dir)
 
 
 # -----------------------------------------------------------------------------
@@ -459,9 +475,8 @@ class ResviewDockWidget(QtWidgets.QWidget):
 
         # --- Data tab
         self.spec_file_w = FileEdit(mode="r", label="SPEC file")
-        self.data_file_w = FileEdit(
-            mode="r", label="DATA file"
-        )  # file OR folder
+        self.data_file_w = FileEdit(mode="r", label="DATA folder")
+        # only folder selection is allowed for DATA
         self.scans_w = LineEdit(label="Scans (e.g. 17, 18-22, 30)")
         self.scans_w.tooltip = "Comma/range list. Examples: 17, 18-22, 30"
         self.only_hkl_w = CheckBox(label="Only HKL scans")
@@ -469,7 +484,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         _ = set_file_button_symbol(self.spec_file_w, "📂")
         data_btn = set_file_button_symbol(self.data_file_w, "📂")
         if data_btn is not None:
-            attach_dual_picker(self.data_file_w, data_btn)
+            attach_dir_picker(self.data_file_w, data_btn)
 
         title_params = Label(value="<b>Experiment Setup</b>")
         self.distance_w = FloatSpinBox(
@@ -649,9 +664,31 @@ class ResviewDockWidget(QtWidgets.QWidget):
 
         self.btn_view = PushButton(text="🔭 View RSM")
         self.btn_export = PushButton(text="💾 Export to VTK")
-        self.btn_run_all = PushButton(text="▶️ Run All")
-        self.btn_run_all.native.setObjectName("RunAllPrimary")
-        self.btn_run_all.native.setMinimumHeight(64)
+
+        # Create a plain Qt QPushButton for "Run All" with direct inline styling
+        # This bypasses magicgui and QSS issues to ensure the button displays correctly.
+        self.btn_run_all_native = QtWidgets.QPushButton("Run All")
+        self.btn_run_all_native.setMinimumHeight(50)
+        self.btn_run_all_native.setMinimumWidth(200)
+        self.btn_run_all_native.setFont(QtGui.QFont("", 14, QtGui.QFont.Bold))
+        # Apply inline stylesheet directly to the button (not via QSS)
+        self.btn_run_all_native.setStyleSheet("""
+            background-color: #ff9800;
+            color: white;
+            border: 2px solid #e68900;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-weight: bold;
+            font-size: 14px;
+        """)
+        # Load and set icon if available
+        with contextlib.suppress(Exception):
+            icon = load_app_icon()
+            if icon is not None:
+                self.btn_run_all_native.setIcon(icon)
+                self.btn_run_all_native.setIconSize(QtCore.QSize(20, 20))
+        # Connect the button to the on_run_all handler
+        self.btn_run_all_native.clicked.connect(self.on_run_all)
 
         left_bottom = QtWidgets.QWidget()
         vleft = QtWidgets.QVBoxLayout(left_bottom)
@@ -666,7 +703,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         row3.setSpacing(12)
         row3.addWidget(left_bottom)
         row3.addStretch(1)
-        row3.addWidget(self.btn_run_all.native)
+        row3.addWidget(self.btn_run_all_native)
 
         col3 = Container(
             layout="vertical",
@@ -761,6 +798,9 @@ class ResviewDockWidget(QtWidgets.QWidget):
 
         self._apply_yaml_to_widgets()
         self._connect_widget_changes()
+        # Ensure DATA folder picker opens a sensible directory by default
+        if not as_path_str(self.data_file_w.value).strip():
+            self.data_file_w.value = os.path.expanduser("~")
 
         # Button handlers
         self.btn_load.clicked.connect(self.on_load)
@@ -769,7 +809,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         self.btn_regrid.clicked.connect(self.on_regrid)
         self.btn_view.clicked.connect(self.on_view)
         self.btn_export.clicked.connect(self.on_export_vtk)
-        self.btn_run_all.clicked.connect(self.on_run_all)
+        self.btn_run_all_native.clicked.connect(self.on_run_all)
 
     # -------------------------------------------------------------------------
     # YAML helpers (no blind exceptions)
@@ -882,7 +922,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.btn_regrid,
             self.btn_view,
             self.btn_export,
-            self.btn_run_all,
+            self.btn_run_all_native,
         ):
             with contextlib.suppress(AttributeError):
                 btn.native.setEnabled(not b)
@@ -934,8 +974,8 @@ class ResviewDockWidget(QtWidgets.QWidget):
         if not spec or not os.path.isfile(spec):
             show_error("Select a valid SPEC file.")
             return
-        if not (os.path.isfile(dpath) or os.path.isdir(dpath)):
-            show_error("Select a valid DATA file (or a folder).")
+        if not os.path.isdir(dpath):
+            show_error("Select a valid DATA folder.")
             return
         if not scans:
             show_error("Enter at least one scan (e.g. '17, 18-22').")
@@ -947,11 +987,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         self.pump(50)
 
         try:
-            tiff_arg = (
-                dpath
-                if os.path.isdir(dpath)
-                else (os.path.dirname(dpath) or ".")
-            )
+            tiff_arg = dpath
             loader = RSMDataLoader(
                 spec,
                 yaml_path(),
@@ -1163,7 +1199,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.set_busy(False)
 
     def on_run_all(self) -> None:
-        self.btn_run_all.native.setEnabled(False)
+        self.btn_run_all_native.setEnabled(False)
         try:
             self.set_progress(0, busy=False)
             self.status("Running pipeline (Load → Build → Regrid → View)…")
@@ -1186,7 +1222,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.on_view()
             self.status("Run All completed.")
         finally:
-            self.btn_run_all.native.setEnabled(True)
+            self.btn_run_all_native.setEnabled(True)
 
 
 # -----------------------------------------------------------------------------

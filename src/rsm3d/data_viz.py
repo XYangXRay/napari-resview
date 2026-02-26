@@ -367,7 +367,7 @@ class RSMNapariViewer:
 
         v.mouse_move_callbacks.append(on_mouse_move)
 
-        @v.bind_key("C")
+        @v.bind_key("C", overwrite=True)
         def _toggle_coords(viewer):
             self._hud_enabled = not self._hud_enabled
             overlay = getattr(viewer, "text_overlay", None)
