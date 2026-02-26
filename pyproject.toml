@@ -174,3 +174,4 @@ napari = "napari"
 
 [tool.pixi.dependencies]
 ruff = ">=0.15.2,<0.16"
+tox = ">=4.46.3,<5"
