@@ -60,7 +60,12 @@ dev = [
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "napari[qt]",  # test with napari's default Qt bindings
-
+    "numpy",
+    "magicgui",
+    "h5py",
+    "scikit-image",
+    "pyyaml",
+    "qtpy",
 ]
 
 [project.entry-points."napari.manifest"]
