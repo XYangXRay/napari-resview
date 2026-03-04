@@ -714,7 +714,7 @@ class IntensityNapariViewer:
     def apply_crop(
         self, y_min: int, y_max: int, x_min: int, x_max: int
     ) -> None:
-        """Crop the intensity display to the specified region.
+        """Crop the intensity display to the specified region and update ROI position.
 
         Args:
             y_min: Minimum y coordinate (row)
@@ -751,6 +751,9 @@ class IntensityNapariViewer:
             # Crop the raw data
             cropped_data = self._raw_tyx[:, y_min:y_max, x_min:x_max]
 
+            # Update internal raw data to cropped version
+            self._raw_tyx = cropped_data
+
             # Prepare (log transform if needed) and update layer
             prepared_data = self._prepare(cropped_data)
             self._layer_ts.data = prepared_data
@@ -763,13 +766,40 @@ class IntensityNapariViewer:
                     hi = lo + 1e-6
                 self._layer_ts.contrast_limits = (float(lo), float(hi))
 
-            # Remove ROI layer since the view is now cropped
-            if self._roi_layer is not None:
+            # Update ROI layer position to match new coordinate system
+            if self._roi_layer is not None and len(self._roi_layer.data) > 0:
                 try:
-                    self._viewer.layers.remove(self._roi_layer)
-                    self._roi_layer = None
-                except (ValueError, KeyError):
-                    pass
+                    # Get current ROI coordinates (in original frame)
+                    old_roi = self._roi_layer.data[0].copy()
+
+                    # Shift ROI coordinates by crop offset
+                    new_roi = old_roi - np.array([y_min, x_min])
+
+                    # Get new dimensions
+                    new_H, new_W = cropped_data.shape[1], cropped_data.shape[2]
+
+                    # Clamp ROI to new bounds
+                    new_roi[:, 0] = np.clip(new_roi[:, 0], 0, new_H)
+                    new_roi[:, 1] = np.clip(new_roi[:, 1], 0, new_W)
+
+                    # Update ROI data
+                    self._roi_layer.data = [new_roi]
+                    self._roi_layer.refresh()
+
+                    logger.debug(
+                        "Updated ROI position: shifted by (%d, %d)",
+                        -y_min,
+                        -x_min,
+                    )
+                except (
+                    AttributeError,
+                    TypeError,
+                    IndexError,
+                    ValueError,
+                ) as roi_err:
+                    logger.warning(
+                        "Failed to update ROI position: %s", roi_err
+                    )
 
             # Reset viewer to fit the new cropped data
             with contextlib.suppress(Exception):

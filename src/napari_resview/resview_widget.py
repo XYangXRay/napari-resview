@@ -14,13 +14,15 @@ What’s implemented in this version:
 2) UI layout changes requested earlier
    - Crop controls moved to the Data tab
    - UB controls moved to the Build tab
-   - Crop geometry is applied to ExperimentSetup fields (beamcenter + detector size) automatically
-     when crop is enabled and bounds are valid.
+   - Crop is applied when "Crop from ROI" button is clicked:
+     * Updates DataFrame intensity with cropped frames
+     * Updates ExperimentSetup with new detector size and beam center
+     * Updates intensity viewer display
 
 3) Pipeline behavior changes
-   - Crop is applied during Build (immediately after compute_full) via builder.crop_by_positions()
-     so downstream (regrid/view/export) operates on cropped data.
-   - UI geometry fields are adjusted when crop changes (beamcenter and detector size).
+   - Data is cropped at the source (DataFrame and setup) when "Crop from ROI" is clicked
+   - RSMBuilder receives already-cropped data, no additional cropping needed
+   - Downstream operations (build/regrid/view/export) work with cropped data directly
 
 4) View tab additions
    - Stop: cancels the in-flight load worker and stops Run All chaining
@@ -408,11 +410,13 @@ class ResviewDockWidget(QtWidgets.QWidget):
         # Runtime state
         self._state: dict[str, Any] = {
             "loader": None,
+            "setup": None,
+            "ub": None,
+            "df": None,
             "builder": None,
             "grid": None,
             "edges": None,
             "intensity_frames": None,
-            "ub": None,
             "rsm_viewer": None,
             "intensity_viewer": None,
         }
@@ -1276,11 +1280,14 @@ class ResviewDockWidget(QtWidgets.QWidget):
 
     def _apply_crop_geometry_to_setup(self) -> None:
         """
-        If crop enabled and bounds are valid, update ExperimentSetup fields:
-          ypixels/xpixels := cropped size
-          ycenter/xcenter := shifted by crop origin (ymin/xmin)
+        DEPRECATED: This method is no longer used.
 
-        This is a *UI geometry update*; actual cropping of data happens in on_build (crop_by_positions).
+        Cropping is now applied directly in on_crop_from_roi() which:
+        - Updates DataFrame intensity with cropped frames
+        - Updates setup object with new detector size and beam center
+        - Updates intensity viewer display
+
+        This ensures the data, setup, and UI are all synchronized after cropping.
         """
         if not self._crop_bounds_valid():
             return
@@ -1394,29 +1401,45 @@ class ResviewDockWidget(QtWidgets.QWidget):
 
         load_result = loader.load()
 
+        setup = None
         ub = None
         df = None
         frames = None
 
         if isinstance(load_result, tuple):
+            if len(load_result) >= 1:
+                setup = load_result[0]
             if len(load_result) >= 2:
                 ub = load_result[1]
             if len(load_result) >= 3:
                 df = load_result[2]
 
+        # Fallback to loader attributes if tuple unpacking didn't work
+        if setup is None:
+            setup = getattr(loader, "setup", None)
         if ub is None:
             ub = getattr(loader, "ub", None)
+        if df is None:
+            df = getattr(loader, "df", None)
 
         if df is not None and hasattr(df, "intensity"):
             with contextlib.suppress(TypeError):
                 frames = list(df.intensity)
 
-        return {"loader": loader, "ub": ub, "frames": frames}
+        return {
+            "loader": loader,
+            "setup": setup,
+            "ub": ub,
+            "df": df,
+            "frames": frames,
+        }
 
     def _on_load_done(self, result: dict[str, Any]) -> None:
         try:
             self._state["loader"] = result.get("loader")
+            self._state["setup"] = result.get("setup")
             self._state["ub"] = result.get("ub")
+            self._state["df"] = result.get("df")
             self._state["intensity_frames"] = result.get("frames")
 
             # Update detector size from intensity frame dimensions (actual data)
@@ -1726,11 +1749,72 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.ycenter_w.value = int(new_yc)
             self.xcenter_w.value = int(new_xc)
 
-            # Apply crop to the intensity viewer display
+            # Update the DataFrame's intensity data with cropped frames
+            df = self._state.get("df")
+            if df is not None and hasattr(df, "intensity"):
+                try:
+                    # Crop each intensity frame in the DataFrame
+                    cropped_intensity = []
+                    for frame in df["intensity"]:
+                        if hasattr(frame, "shape") and len(frame.shape) >= 2:
+                            cropped_frame = frame[y_min:y_max, x_min:x_max]
+                            cropped_intensity.append(cropped_frame)
+                        else:
+                            cropped_intensity.append(frame)
+
+                    # Update the DataFrame with cropped intensity
+                    df["intensity"] = cropped_intensity
+                    self._state["df"] = df
+
+                    # Update intensity_frames in state for consistency
+                    self._state["intensity_frames"] = cropped_intensity
+
+                    logger.info(
+                        "Cropped %d intensity frames to shape (%d, %d)",
+                        len(cropped_intensity),
+                        new_ypx,
+                        new_xpx,
+                    )
+                except (
+                    AttributeError,
+                    TypeError,
+                    KeyError,
+                    IndexError,
+                ) as crop_err:
+                    logger.warning(
+                        "Failed to crop DataFrame intensity: %s", crop_err
+                    )
+
+            # Update the setup object with new detector dimensions
+            setup = self._state.get("setup")
+            if setup is not None:
+                try:
+                    setup.ypixels = int(new_ypx)
+                    setup.xpixels = int(new_xpx)
+                    setup.ycenter = int(new_yc)
+                    setup.xcenter = int(new_xc)
+                    self._state["setup"] = setup
+                    logger.info(
+                        "Updated setup: detector=%dx%d, center=(%d, %d)",
+                        new_xpx,
+                        new_ypx,
+                        new_xc,
+                        new_yc,
+                    )
+                except (AttributeError, TypeError) as setup_err:
+                    logger.warning(
+                        "Failed to update setup object: %s", setup_err
+                    )
+
+            # Update the intensity viewer in place with cropped data and adjusted ROI
+            # The viewer's apply_crop() method will:
+            # - Update the displayed image to cropped data
+            # - Reposition the ROI box to the new coordinate system
+            # - Keep the same viewer window open (no need to reopen)
             intensity_viewer.apply_crop(y_min, y_max, x_min, x_max)
 
             self.status(
-                f"Crop applied to intensity: y=[{y_min}, {y_max}), x=[{x_min}, {x_max})"
+                f"Crop applied: y=[{y_min}, {y_max}), x=[{x_min}, {x_max}), detector={new_xpx}×{new_ypx}"
             )
 
         except Exception as e:
@@ -1738,8 +1822,12 @@ class ResviewDockWidget(QtWidgets.QWidget):
             show_error(f"Failed to extract ROI bounds: {e}")
 
     def on_build(self) -> None:
-        loader = self._state.get("loader")
-        if loader is None:
+        # Get loaded data from state (no longer need the loader)
+        setup = self._state.get("setup")
+        ub = self._state.get("ub")
+        df = self._state.get("df")
+
+        if setup is None or df is None:
             show_error("Load data first.")
             return
 
@@ -1751,7 +1839,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         with contextlib.suppress(AttributeError):
             self.ub_matrix_w.value = self._ub_grid_to_text()
 
-        # Optional: parse UB and push into loader if it supports it (best-effort)
+        # Parse UB from UI (user may have edited it)
         ub_arr = None
         try:
             ub_arr = parse_ub_matrix(str(self.ub_matrix_w.value or ""))
@@ -1761,16 +1849,19 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.set_progress(0, busy=False)
             return
 
-        if ub_arr is not None:
-            with contextlib.suppress(AttributeError, TypeError):
-                if hasattr(loader, "set_ub"):
-                    loader.set_ub(ub_arr)
-                else:
-                    loader.ub = ub_arr
+        # Use UI UB if available, otherwise use loaded UB
+        if ub_arr is None:
+            ub_arr = ub
+
+        # Update state with current UB
+        self._state["ub"] = ub_arr
 
         try:
+            # Pass setup, UB, df directly to RSMBuilder (no loader re-execution)
             b = RSMBuilder(
-                loader,
+                setup,
+                ub_arr,
+                df,
                 sample_axes=parse_axes_list(self.sample_axes_w.value),
                 detector_axes=parse_axes_list(self.detector_axes_w.value),
                 ub_includes_2pi=bool(self.ub_2pi_w.value),
@@ -1778,13 +1869,8 @@ class ResviewDockWidget(QtWidgets.QWidget):
             )
             b.compute_full(verbose=False)
 
-            # Apply crop BEFORE regrid/view/export (right after compute_full)
-            if self._crop_bounds_valid():
-                ymin, ymax = int(self.y_min_w.value), int(self.y_max_w.value)
-                xmin, xmax = int(self.x_min_w.value), int(self.x_max_w.value)
-                # crop_by_positions expects bounds in detector pixel coordinates
-                b.crop_by_positions(y_bound=(ymin, ymax), x_bound=(xmin, xmax))
-                self.status("Applied crop to builder (crop_by_positions).")
+            # Note: Cropping is now done directly on the DataFrame and setup
+            # when the "Crop from ROI" button is clicked, so no need to crop here
 
             self._state["builder"] = b
             self._state["grid"] = None

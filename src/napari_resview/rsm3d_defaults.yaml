@@ -1,8 +1,8 @@
-active_profile: CMS
+active_profile: ISR
 profiles:
   ISR:
     data:
-      loader_type: CMS
+      loader_type: ISR
       data_file: /Users/xiaogangyang/data/isr_rsm3d/data_6oct23_tiff
       scans: '17'
       spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
@@ -12,12 +12,12 @@ profiles:
     ExperimentSetup:
       distance: 0.78105
       pitch: 7.5e-05
-      ycenter: 202
-      xcenter: 143
-      xpixels: 253
-      ypixels: 457
-      energy: 11.47
-      wavelength: 1.081
+      ycenter: 66
+      xcenter: 125
+      xpixels: 232
+      ypixels: 320
+      energy: 11.566
+      wavelength: 1.072000000000001
     Crystal:
       ub: '0.527257 -0.371243 0.00229402
 
@@ -31,10 +31,10 @@ profiles:
       detector_axes: z-
     crop:
       enable: true
-      y_min: 55
-      y_max: 512
-      x_min: 372
-      x_max: 625
+      y_min: 0
+      y_max: 320
+      x_min: 0
+      x_max: 232
     regrid:
       space: hkl
       grid_shape: 100,*,*
@@ -51,9 +51,9 @@ profiles:
       vtr_path: /Users/xiaogangyang/pyprojects/napari-resview
   CMS:
     data:
-      loader_type: CMS
+      loader_type: ISR
       data_file: /Users/xiaogangyang/data/cms_rsm3d/stitched3
-      scans: 796715-797625
+      scans: 796715-797076
       spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
       only_hkl: false
       cms_crop: null
@@ -61,11 +61,11 @@ profiles:
     ExperimentSetup:
       distance: 3.03
       pitch: 0.000172
-      ycenter: 480
-      xcenter: 487
-      xpixels: 1475
-      ypixels: 1679
-      energy: 13.490000000000009
+      ycenter: 484
+      xcenter: 490
+      xpixels: 989
+      ypixels: 972
+      energy: 13.49
       wavelength: 0.919
     Crystal:
       ub: '1 0 0
@@ -80,10 +80,10 @@ profiles:
       detector_axes: z-
     crop:
       enable: true
-      y_min: 643
-      y_max: 1615
-      x_min: 247
-      x_max: 1222
+      y_min: 640
+      y_max: 1612
+      x_min: 244
+      x_max: 1233
     regrid:
       space: q
       grid_shape: 100,*,*
