@@ -1,46 +1,100 @@
-data:
-  spec_file: /Users/xiaogangyang/data/isr_rsm3d/FeTe_GeTe_101525
-  tiff_dir: /Users/xiaogangyang/BNL.GOV Dropbox/Xiaogang Yang/isr_rsm3d/setup_6oct23_tiff_1017_tmp
-  scans: '41'
-  only_hkl: false
-  data_file: /Users/xiaogangyang/data/isr_rsm3d/Oct_22_2025/tiff
-ExperimentSetup:
-  distance: 0.78105
-  pitch: 7.5e-05
-  ycenter: 257
-  xcenter: 515
-  xpixels: 1030
-  ypixels: 514
-  energy: 11.9
-  wavelength: null
-build:
-  ub_includes_2pi: true
-  center_is_one_based: null
-  sample_axes: z-, y+, x+
-  detector_axes: z-
-crop:
-  enable: false
-  y_min: 120
-  y_max: 510
-  x_min: 380
-  x_max: 610
-regrid:
-  space: hkl
-  grid_shape: 100,*,*
-  fuzzy: true
-  fuzzy_width: null
-  normalize: null
-view:
-  log_view: true
-  cmap: inferno
-  rendering: null
-  contrast_lo: 1.2000000000000002
-  contrast_hi: 99.8
-export:
-  vtr_path: /Users/xiaogangyang/data_tmp/rsm3d_test
-Crystal:
-  ub: '1 0 0
+active_profile: CMS
+profiles:
+  ISR:
+    data:
+      loader_type: CMS
+      data_file: /Users/xiaogangyang/data/isr_rsm3d/data_6oct23_tiff
+      scans: '17'
+      spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
+      only_hkl: false
+      cms_crop: null
+      cms_angle_step: 1.0
+    ExperimentSetup:
+      distance: 0.78105
+      pitch: 7.5e-05
+      ycenter: 202
+      xcenter: 143
+      xpixels: 253
+      ypixels: 457
+      energy: 11.47
+      wavelength: 1.081
+    Crystal:
+      ub: '0.527257 -0.371243 0.00229402
 
-    0 1 0
+        -0.00521895 -0.0113961 -0.644724
 
-    0 0 1'
+        0.371213 0.527139 -0.0123226'
+    build:
+      ub_includes_2pi: true
+      center_is_one_based: false
+      sample_axes: z-, y+, x+
+      detector_axes: z-
+    crop:
+      enable: true
+      y_min: 55
+      y_max: 512
+      x_min: 372
+      x_max: 625
+    regrid:
+      space: hkl
+      grid_shape: 100,*,*
+      fuzzy: false
+      fuzzy_width: 0.0
+      normalize: mean
+    view:
+      log_view: true
+      cmap: inferno
+      rendering: attenuated_mip
+      contrast_lo: 1.0
+      contrast_hi: 99.8
+    export:
+      vtr_path: /Users/xiaogangyang/pyprojects/napari-resview
+  CMS:
+    data:
+      loader_type: CMS
+      data_file: /Users/xiaogangyang/data/cms_rsm3d/stitched3
+      scans: 796715-797625
+      spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
+      only_hkl: false
+      cms_crop: null
+      cms_angle_step: 0.5
+    ExperimentSetup:
+      distance: 3.03
+      pitch: 0.000172
+      ycenter: 480
+      xcenter: 487
+      xpixels: 1475
+      ypixels: 1679
+      energy: 13.490000000000009
+      wavelength: 0.919
+    Crystal:
+      ub: '1 0 0
+
+        0 1 0
+
+        0 0 1'
+    build:
+      ub_includes_2pi: true
+      center_is_one_based: true
+      sample_axes: z-, y+, x+
+      detector_axes: z-
+    crop:
+      enable: true
+      y_min: 643
+      y_max: 1615
+      x_min: 247
+      x_max: 1222
+    regrid:
+      space: q
+      grid_shape: 100,*,*
+      fuzzy: false
+      fuzzy_width: 0.0
+      normalize: mean
+    view:
+      log_view: true
+      cmap: inferno
+      rendering: attenuated_mip
+      contrast_lo: 1.0
+      contrast_hi: 99.8
+    export:
+      vtr_path: /Users/xiaogangyang/pyprojects/napari-resview

@@ -1,10 +1,11 @@
-from __future__ import annotations
-
 import contextlib
+import logging
 from collections.abc import Iterable, Sequence
 from typing import Tuple, Union
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     import napari  # type: ignore
@@ -600,25 +601,23 @@ class IntensityNapariViewer:
 
     def __init__(
         self,
-        intensity: Union[np.ndarray, Sequence[np.ndarray]],
+        intensity,
         *,
         name: str = "Intensity",
         log_view: bool = True,
-        contrast_percentiles: Tuple[float, float] = (1.0, 99.8),
+        contrast_percentiles=(1.0, 99.8),
         cmap: str = "inferno",
         rendering: str = "attenuated_mip",  # kept for API compatibility
-        add_timeseries: bool = True,  # NEW: backward compat (unused)
-        add_volume: bool = False,  # NEW: backward compat (unused)
-        scale_tzyx: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        add_timeseries: bool = True,  # backward compat (unused)
+        add_volume: bool = False,  # backward compat (unused)
+        scale_tzyx=(1.0, 1.0, 1.0),
         pad_value: float = np.nan,
     ):
         self._name = name
         self._log = bool(log_view)
         self._p_lo, self._p_hi = map(float, contrast_percentiles)
         self._cmap = cmap
-        self._rendering = (
-            rendering  # <— stored (not used for 2D stack, but kept)
-        )
+        self._rendering = rendering
         self._scale = tuple(map(float, scale_tzyx))
         self._raw_tyx = _to_tyx_any(intensity).astype(np.float32, copy=False)
         self._viewer: napari.Viewer | None = None
@@ -626,25 +625,19 @@ class IntensityNapariViewer:
         self._pad_value = float(pad_value)
         self._add_timeseries = bool(add_timeseries)
         self._add_volume = bool(add_volume)
-        self._roi_drag_callback = None
-        self._roi_label_points = None
-        self._roi_data_callback = None
+        self._roi_layer = None
 
     def launch(self, viewer: napari.Viewer | None = None) -> napari.Viewer:
-        """Launch into a new Napari viewer or reuse the provided `viewer`.
-
-        If `viewer` is None a new `napari.Viewer` is created; otherwise layers
-        are added to the supplied viewer.
-        """
         v = viewer or napari.Viewer(title=self._name)
         self._viewer = v
-        # If reusing a provided viewer, clear its layers so intensity replaces
-        # any existing content in the current viewer.
+
+        # If reusing viewer, clear layers so intensity replaces existing content
         if viewer is not None:
             with contextlib.suppress(Exception):
                 for _ly in list(v.layers):
                     with contextlib.suppress(Exception):
                         v.layers.remove(_ly)
+
         data = self._prepare(self._raw_tyx)
         finite = data[np.isfinite(data)]
         lo, hi = (
@@ -654,6 +647,7 @@ class IntensityNapariViewer:
         )
         if lo == hi:
             hi = lo + 1e-6
+
         self._layer_ts = v.add_image(
             data,
             name="Intensity",
@@ -664,6 +658,7 @@ class IntensityNapariViewer:
         )
         v.dims.ndisplay = 2
 
+        # ROI rectangle
         _, H, W = data.shape
         rect = np.array(
             [
@@ -671,142 +666,128 @@ class IntensityNapariViewer:
                 [H / 4, 3 * W / 4],
                 [3 * H / 4, 3 * W / 4],
                 [3 * H / 4, W / 4],
-            ]
+            ],
+            dtype=float,
         )
-        shapes = v.add_shapes(
+
+        # ROI Shapes layer (rectangle only)
+        self._roi_layer = v.add_shapes(
             [rect],
             shape_type="rectangle",
             edge_color="red",
             face_color="transparent",
             name="ROI",
         )
-        shapes.editable = True
+        self._roi_layer.editable = True
+        # Select the ROI shape to enable transformation
+        self._roi_layer.selected_data = {0}
         with contextlib.suppress(Exception):
-            shapes.mode = "transform"
+            self._roi_layer.mode = "select"
 
-        self._roi_label_points = self._create_roi_label_points(v, rect)
-        self._update_roi_corner_labels(shapes)
+        logger.debug(
+            "ROI layer initialized with data: %s", self._roi_layer.data
+        )
 
-        if self._roi_drag_callback is None:
-
-            def _on_roi_drag(layer, event):
-                if getattr(layer, "mode", None) != "transform":
-                    return
-                self._update_roi_corner_labels(layer)
-                yield
-                while True:
-                    if event.type == "mouse_move":
-                        self._update_roi_corner_labels(layer)
-                    if event.type == "mouse_release":
-                        break
-                    yield
-                self._update_roi_corner_labels(layer)
-
-            self._roi_drag_callback = _on_roi_drag
-        if self._roi_drag_callback not in shapes.mouse_drag_callbacks:
-            shapes.mouse_drag_callbacks.append(self._roi_drag_callback)
-
-        if self._roi_data_callback is None:
-
-            def _on_roi_data(_event):
-                self._update_roi_corner_labels(shapes)
-
-            self._roi_data_callback = _on_roi_data
-        with contextlib.suppress(Exception):
-            shapes.events.data.connect(self._roi_data_callback, weak=False)
-
-        with contextlib.suppress(Exception):
-            names = [ly.name for ly in v.layers]
-            for name in reversed(["Intensity", "ROI", "ROI Corner Labels"]):
-                if name in names:
-                    idx = names.index(name)
-                    if idx != 0:
-                        v.layers.move(idx, 0)
-                        names = [ly.name for ly in v.layers]
         return v
-
-    def _create_roi_label_points(self, viewer, coords: np.ndarray):
-        labels = [
-            f"({y:.2f}, {x:.2f})" for y, x in np.asarray(coords, dtype=float)
-        ]
-        try:
-            return viewer.add_points(
-                coords,
-                name="ROI Corner Labels",
-                text={"string": labels, "size": 10},
-                face_color="white",
-                size=0.0,
-                blending="additive",
-            )
-        except (TypeError, ValueError, AttributeError):
-            return viewer.add_points(
-                coords,
-                name="ROI Corner Labels",
-                text=labels,
-                face_color="white",
-                size=0.0,
-                blending="additive",
-            )
-
-    def _update_roi_corner_labels(self, shapes_layer) -> None:
-        if (
-            self._roi_label_points is None
-            or shapes_layer is None
-            or not shapes_layer.data
-        ):
-            return
-        coords = np.asarray(shapes_layer.data[0], dtype=float)
-        try:
-            self._roi_label_points.data = coords
-        except (AttributeError, TypeError):
-            self._roi_label_points._data = coords
-        labels = [f"({y:.2f}, {x:.2f})" for y, x in coords]
-        text_obj = getattr(self._roi_label_points, "text", None)
-        if text_obj is not None and hasattr(text_obj, "values"):
-            try:
-                text_obj.values = labels
-            except (AttributeError, TypeError, ValueError):
-                text_obj = None
-        if text_obj is None:
-            try:
-                self._roi_label_points.text = {"string": labels, "size": 10}
-            except (TypeError, AttributeError, ValueError):
-                self._roi_label_points.text = labels
-        self._roi_label_points.refresh()
 
     def _prepare(self, a: np.ndarray) -> np.ndarray:
         return np.log1p(np.maximum(a, 0.0)) if self._log else a
+
+    def get_roi_bounds(self) -> tuple[int, int, int, int] | None:
+        """Get current ROI bounds as (y_min, y_max, x_min, x_max).
+
+        Returns None if ROI layer doesn't exist or has no data.
+        """
+        if self._roi_layer is None or not self._roi_layer.data:
+            return None
+        try:
+            corners = np.round(self._roi_layer.data[0]).astype(int)
+            y_coords = corners[:, 0]
+            x_coords = corners[:, 1]
+            y_min, y_max = int(y_coords.min()), int(y_coords.max())
+            x_min, x_max = int(x_coords.min()), int(x_coords.max())
+            return (y_min, y_max, x_min, x_max)
+        except Exception as e:
+            logger.exception("Failed to get ROI bounds: %s", e)
+            return None
+
+    def apply_crop(
+        self, y_min: int, y_max: int, x_min: int, x_max: int
+    ) -> None:
+        """Crop the intensity display to the specified region.
+
+        Args:
+            y_min: Minimum y coordinate (row)
+            y_max: Maximum y coordinate (row, exclusive)
+            x_min: Minimum x coordinate (column)
+            x_max: Maximum x coordinate (column, exclusive)
+        """
+        if self._layer_ts is None or self._viewer is None:
+            logger.warning(
+                "apply_crop: No intensity layer or viewer available"
+            )
+            return
+
+        try:
+            # Get the original raw data
+            T, H, W = self._raw_tyx.shape
+
+            # Validate bounds
+            y_min = max(0, min(y_min, H))
+            y_max = max(0, min(y_max, H))
+            x_min = max(0, min(x_min, W))
+            x_max = max(0, min(x_max, W))
+
+            if y_max <= y_min or x_max <= x_min:
+                logger.warning(
+                    "Invalid crop bounds: y=(%s, %s), x=(%s, %s)",
+                    y_min,
+                    y_max,
+                    x_min,
+                    x_max,
+                )
+                return
+
+            # Crop the raw data
+            cropped_data = self._raw_tyx[:, y_min:y_max, x_min:x_max]
+
+            # Prepare (log transform if needed) and update layer
+            prepared_data = self._prepare(cropped_data)
+            self._layer_ts.data = prepared_data
+
+            # Update contrast limits for the cropped data
+            finite = prepared_data[np.isfinite(prepared_data)]
+            if finite.size > 0:
+                lo, hi = np.percentile(finite, [self._p_lo, self._p_hi])
+                if lo == hi:
+                    hi = lo + 1e-6
+                self._layer_ts.contrast_limits = (float(lo), float(hi))
+
+            # Remove ROI layer since the view is now cropped
+            if self._roi_layer is not None:
+                try:
+                    self._viewer.layers.remove(self._roi_layer)
+                    self._roi_layer = None
+                except (ValueError, KeyError):
+                    pass
+
+            # Reset viewer to fit the new cropped data
+            with contextlib.suppress(Exception):
+                self._viewer.reset_view()
+
+            logger.debug(
+                "Applied crop: y=(%s, %s), x=(%s, %s)",
+                y_min,
+                y_max,
+                x_min,
+                x_max,
+            )
+
+        except Exception as e:
+            logger.exception("Failed to apply crop: %s", e)
 
     def close(self):
         if self._viewer is not None:
             with contextlib.suppress(Exception):
                 self._viewer.close()
             self._viewer = None
-
-    def _set_roi_corner_text(self, shapes_layer, coords=None) -> None:
-        if shapes_layer is None or (coords is None and not shapes_layer.data):
-            return
-        coords_np = np.asarray(
-            coords if coords is not None else shapes_layer.data[0], dtype=float
-        )
-        labels = [f"({y:.2f}, {x:.2f})" for y, x in coords_np]
-        text_obj = getattr(shapes_layer, "text", None)
-
-        if text_obj is not None and hasattr(text_obj, "values"):
-            try:
-                text_obj.values = labels
-                shapes_layer.refresh()
-                return
-            except (AttributeError, TypeError, ValueError):
-                pass
-
-        try:
-            shapes_layer.text = {
-                "string": labels,
-                "size": 10,
-                "color": "white",
-                "anchor": "upper_left",
-            }
-        except (TypeError, AttributeError, ValueError):
-            shapes_layer.text = labels
-        shapes_layer.refresh()
