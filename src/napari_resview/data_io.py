@@ -1,13 +1,17 @@
-# read_data.py
+#!/usr/bin/env python3
+import contextlib
 import numbers
 import os
 import re
+from pathlib import Path
+from typing import Tuple
 
 import h5py
 import numpy as np
 import pandas as pd
 import tifffile
 import vtk
+import yaml
 from vtk.util import numpy_support
 
 try:
@@ -18,12 +22,10 @@ try:
 except ImportError:
     DASK_AVAILABLE = False
 
-import contextlib
-
 from .spec_parser import SpecParser
 
 
-class RSMDataLoader:
+class RSMDataLoader_ISR:
     """
     Load and merge SPEC metadata with TIFF intensity frames.
     Provides (setup, UB, merged DataFrame).
@@ -47,8 +49,12 @@ class RSMDataLoader:
         self.selected_scans = selected_scans
 
     def load(self):
-        # Normalize selected scans early so we can pass selection to the
-        # SpecParser and avoid parsing irrelevant scans.
+        setup = ExperimentSetup.from_yaml(self.setup_file)
+        exp = SpecParser(self.spec_file, self.setup_file)
+        df_meta = exp.to_pandas()
+        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
+        df_meta["data_number"] = df_meta["data_number"].astype(int)
+
         selected_list: list[int] = []
         wanted: set[int] | None = None
         if self.selected_scans is not None:
@@ -60,36 +66,9 @@ class RSMDataLoader:
                 except TypeError:
                     selected_list = [int(self.selected_scans)]
             wanted = set(selected_list)
-
-        exp = SpecParser(
-            self.spec_file,
-            self.setup_file,
-            selected_scans=selected_list or None,
-        )
-        setup = exp.setup
-
-        df_meta = exp.to_pandas()
-        # If parsing produced no metadata rows, bail out with a clear message.
-        if df_meta.empty:
-            if wanted is not None:
+            df_meta = df_meta[df_meta["scan_number"].isin(wanted)]
+            if df_meta.empty:
                 raise ValueError("No metadata rows match selected_scans.")
-            raise ValueError("No metadata rows found in SPEC file.")
-
-        # Normalize numeric columns after confirming presence.
-        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
-        df_meta["data_number"] = df_meta["data_number"].astype(int)
-
-        # If a selection was provided, ensure metadata contains at least one requested scan.
-        if wanted is not None:
-            available = sorted(
-                set(df_meta["scan_number"].astype(int).tolist())
-            )
-            wanted_list = sorted(int(s) for s in wanted)
-            if not df_meta["scan_number"].isin(wanted).any():
-                raise ValueError(
-                    f"No metadata rows match selected_scans={wanted_list}. "
-                    f"Available scans in SPEC: {available}"
-                )
 
         # 2. Load TIFF frames
         rd = ReadFrame(self.tiff_dir, use_dask=self.use_dask)
@@ -173,6 +152,398 @@ class RSMDataLoader:
         return setup, UB, df
 
 
+class RSMDataloader_CMS:
+    """
+    CMS TIFF loader using pathlib + pandas.
+
+    Behavior:
+    - Automatically detects .tif/.tiff files
+    - Extracts 6 or 7 digit non-zero scan number
+    - If filename contains phi OR th → use that value as TH
+    - phi column is always 0.0
+    - If no angle found in any file → synthesize TH using:
+          th = (scan_number - first_scan) * angle_step
+    - Returns: setup, UB (identity), df
+    """
+
+    SCAN_REGEX = r"(?<!\d)([1-9]\d{5,6})(?!\d)"
+    PHI_REGEX = r"phi[-_]?(-?\d+(?:\.\d+)?)"
+    TH_REGEX = r"th[-_]?(-?\d+(?:\.\d+)?)"
+
+    def __init__(
+        self,
+        setup_file: str,
+        tiff_dir: str,
+        *,
+        use_dask: bool = False,  # kept for compatibility
+        selected_scans=None,
+        crop_window: Tuple[Tuple[int, int], Tuple[int, int]] | None = None,
+        angle_step: float = 1.0,
+    ):
+        self.setup_file = setup_file
+        self.tiff_dir = Path(tiff_dir)
+        self.use_dask = use_dask
+        self.selected_scans = selected_scans
+        self.crop_window = crop_window
+        self.angle_step = float(angle_step)
+
+    # ---------------------------------------------------------------------
+    # Crop helper
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _crop_image(image, crop_window):
+        arr = np.asarray(image)
+        (r0, r1), (c0, c1) = crop_window
+        return arr[r0:r1, c0:c1]
+
+    # ---------------------------------------------------------------------
+    # Load
+    # ---------------------------------------------------------------------
+    def load(self):
+        setup = ExperimentSetup.from_yaml(self.setup_file)
+
+        if not self.tiff_dir.exists():
+            raise ValueError(
+                f"RSMDataloader_CMS: directory not found: {self.tiff_dir}"
+            )
+
+        files = sorted(
+            list(self.tiff_dir.glob("*.tif"))
+            + list(self.tiff_dir.glob("*.tiff"))
+        )
+
+        if not files:
+            raise ValueError("RSMDataloader_CMS: no TIFF files found.")
+
+        df_meta = pd.DataFrame({"path": files})
+        df_meta["fname"] = df_meta["path"].apply(lambda p: p.name)
+
+        # Extract scan number
+        df_meta["scan_number"] = df_meta["fname"].str.extract(
+            self.SCAN_REGEX, expand=False
+        )
+
+        df_meta = df_meta.dropna(subset=["scan_number"])
+        if df_meta.empty:
+            raise ValueError(
+                "RSMDataloader_CMS: no valid scan numbers detected."
+            )
+
+        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
+
+        # Extract angles (phi OR th) → always assign to TH
+        phi_extract = df_meta["fname"].str.extract(
+            self.PHI_REGEX, expand=False
+        )
+
+        th_extract = df_meta["fname"].str.extract(self.TH_REGEX, expand=False)
+
+        # Prefer th if present, otherwise phi
+        df_meta["th"] = (
+            th_extract.fillna(phi_extract).fillna(0.0).astype(float)
+        )
+
+        # Apply selected_scans filtering
+        if self.selected_scans is not None:
+            if isinstance(self.selected_scans, numbers.Integral):
+                selected = {int(self.selected_scans)}
+            else:
+                selected = {int(s) for s in self.selected_scans}
+            df_meta = df_meta[df_meta["scan_number"].isin(selected)]
+
+            if df_meta.empty:
+                raise ValueError(
+                    "RSMDataloader_CMS: no TIFF frames match selected_scans."
+                )
+
+        df_meta = df_meta.sort_values(
+            "scan_number", kind="stable"
+        ).reset_index(drop=True)
+
+        # Load intensity images
+        intensities = []
+        for path in df_meta["path"]:
+            img = tifffile.imread(path)
+            if self.crop_window is not None:
+                img = self._crop_image(img, self.crop_window)
+            intensities.append(img)
+
+        # If ALL extracted angles are zero → synthesize TH
+        if np.allclose(df_meta["th"].values, 0.0):
+            first_scan = df_meta["scan_number"].min()
+            df_meta["th"] = (df_meta["scan_number"] - first_scan).astype(
+                float
+            ) * self.angle_step
+
+        # Final DataFrame (same structure as original CMS loader)
+        df = pd.DataFrame(
+            {
+                "scan_number": df_meta["scan_number"].values,
+                "intensity": intensities,
+                "tth": 0.0,
+                "th": df_meta["th"].values,
+                "chi": 0.0,
+                "phi": 0.0,  # always zero for CMS
+            }
+        )
+
+        UB = np.eye(3, dtype=float)
+        return setup, UB, df
+
+
+class ExperimentSetup:
+    """
+    Load experiment parameters from a YAML file. Wavelength is optional:
+      • if energy is supplied (>0 keV), wavelength is computed from energy
+      • if energy is omitted/null, a valid wavelength must be provided
+      • sub-micrometer wavelengths (<1e-3) are interpreted as meters and converted to Å
+    Required keys (either top-level or inside `ExperimentSetup:`):
+      distance, pitch, ycenter, xcenter, xpixels, ypixels
+    One of energy or wavelength must be present.
+    """
+
+    REQUIRED_KEYS = (
+        "distance",
+        "pitch",
+        "ycenter",
+        "xcenter",
+        "xpixels",
+        "ypixels",
+        "energy",
+    )
+
+    def __init__(
+        self,
+        distance: float,
+        pitch: float,
+        ycenter: int,
+        xcenter: int,
+        xpixels: int,
+        ypixels: int,
+        energy: float | None = None,
+        wavelength: float | None = None,
+    ):
+        self.distance = float(distance)
+        self.pitch = float(pitch)
+        self.ycenter = int(ycenter)
+        self.xcenter = int(xcenter)
+        self.xpixels = int(xpixels)
+        self.ypixels = int(ypixels)
+
+        if self.distance <= 0:
+            raise ValueError("ExperimentSetup: 'distance' must be > 0")
+        if self.pitch <= 0:
+            raise ValueError("ExperimentSetup: 'pitch' must be > 0")
+        if self.xpixels <= 0 or self.ypixels <= 0:
+            raise ValueError(
+                "ExperimentSetup: 'xpixels' and 'ypixels' must be > 0"
+            )
+
+        lam_input: float | None = None
+        if wavelength is not None:
+            if isinstance(wavelength, str):
+                cleaned = wavelength.strip().lower()
+                if cleaned not in {"", "none", "null"}:
+                    try:
+                        lam_input = float(wavelength)
+                    except ValueError as exc:
+                        raise ValueError(
+                            "ExperimentSetup: wavelength must be numeric"
+                        ) from exc
+            else:
+                lam_input = float(wavelength)
+
+        if lam_input is not None and 0.0 < lam_input < 1e-3:
+            lam_input *= 1e10
+
+        self.energy = None
+        self.energy_keV = None
+
+        if energy is not None:
+            self.energy = float(energy)
+            self.energy_keV = self.energy
+            if self.energy_keV <= 0:
+                raise ValueError("ExperimentSetup: 'energy' (keV) must be > 0")
+            self.wavelength = self._energy_keV_to_lambda_A(self.energy_keV)
+        else:
+            if lam_input is None or lam_input <= 0.0:
+                raise ValueError(
+                    "ExperimentSetup: wavelength must be provided and positive when energy is missing"
+                )
+            self.wavelength = lam_input
+            self.energy_keV = self._lambda_A_to_energy_keV(self.wavelength)
+            if self.energy_keV <= 0.0:
+                raise ValueError(
+                    "ExperimentSetup: derived energy from wavelength is non-positive"
+                )
+            self.energy = self.energy_keV
+
+    @staticmethod
+    def _energy_keV_to_lambda_A(E_keV: float) -> float:
+        return 12.398419843320026 / float(E_keV)
+
+    @staticmethod
+    def _lambda_A_to_energy_keV(lambda_A: float) -> float:
+        return 12.398419843320026 / float(lambda_A)
+
+    @staticmethod
+    def _to_float(value):
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            try:
+                return float(str(value).replace("_", "").strip())
+            except Exception as exc:
+                raise ValueError(
+                    f"Expected float-compatible value, got {value!r}"
+                ) from exc
+
+    @staticmethod
+    def _to_int(value):
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            try:
+                return int(float(str(value).replace("_", "").strip()))
+            except Exception as exc:
+                raise ValueError(
+                    f"Expected int-compatible value, got {value!r}"
+                ) from exc
+
+    @classmethod
+    def from_yaml(cls, path: str | Path):
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"Experiment YAML not found: {p}")
+        with p.open("r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+
+        # Try new profile-based structure first (new metadata format)
+        sec = None
+        if isinstance(doc.get("profiles"), dict):
+            # Find active profile or default to first available
+            active_profile = doc.get("active_profile")
+            profiles = doc["profiles"]
+
+            if active_profile and active_profile in profiles:
+                profile_data = profiles[active_profile]
+            elif profiles:
+                # fallback to first profile if active_profile not set
+                active_profile = next(iter(profiles.keys()))
+                profile_data = profiles[active_profile]
+            else:
+                profile_data = None
+
+            if isinstance(profile_data, dict):
+                sec = profile_data.get("ExperimentSetup", {})
+
+        # Fallback to old flat structure if new structure not found
+        if sec is None:
+            sec = cls._extract_section(doc)
+
+        merged = {}
+        for k in cls.REQUIRED_KEYS + ("wavelength",):
+            if k in sec:
+                merged[k] = sec[k]
+            elif k in doc:
+                merged[k] = doc[k]
+
+        missing = [
+            k
+            for k in cls.REQUIRED_KEYS
+            if k != "energy" and merged.get(k) in (None, "", "None", "null")
+        ]
+        if missing:
+            raise ValueError(f"Missing required keys in YAML: {missing}")
+
+        energy_raw = merged.get("energy")
+        if isinstance(energy_raw, str) and energy_raw.strip().lower() in {
+            "",
+            "none",
+            "null",
+        }:
+            energy_raw = None
+
+        wavelength_raw = merged.get("wavelength")
+        if isinstance(
+            wavelength_raw, str
+        ) and wavelength_raw.strip().lower() in {"", "none", "null"}:
+            wavelength_raw = None
+
+        if energy_raw is None and wavelength_raw is None:
+            raise ValueError(
+                "Experiment YAML must provide either energy or wavelength."
+            )
+
+        params = {
+            "distance": cls._to_float(merged["distance"]),
+            "pitch": cls._to_float(merged["pitch"]),
+            "ycenter": cls._to_int(merged["ycenter"]),
+            "xcenter": cls._to_int(merged["xcenter"]),
+            "xpixels": cls._to_int(merged["xpixels"]),
+            "ypixels": cls._to_int(merged["ypixels"]),
+            "energy": (
+                cls._to_float(energy_raw) if energy_raw is not None else None
+            ),
+            "wavelength": (
+                cls._to_float(wavelength_raw)
+                if wavelength_raw is not None
+                else None
+            ),
+        }
+        return cls(**params)
+
+    def __repr__(self):
+        energy_display = (
+            self.energy_keV if self.energy_keV is not None else "N/A"
+        )
+        return (
+            f"<ExperimentSetup: distance={self.distance} m, pitch={self.pitch} m, "
+            f"xcenter={self.xcenter}, ycenter={self.ycenter}, "
+            f"xpixels={self.xpixels}, ypixels={self.ypixels}, "
+            f"energy={energy_display} keV, wavelength={self.wavelength} Å>"
+        )
+
+    @staticmethod
+    def _to_int(v):
+        """Convert a value from YAML to an integer, handling common pitfalls."""
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned in {"", "none", "null"}:
+                return None
+            try:
+                return int(float(v))
+            except ValueError as err:
+                raise ValueError(f"Cannot convert to int: {v}") from err
+        return int(v)
+
+    @classmethod
+    def _extract_section(cls, data: dict) -> dict:
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Top-level YAML must be a mapping of keys to values."
+            )
+        for key in ("ExperimentSetup", "experiment", "experiment_setup"):
+            section = data.get(key)
+            if isinstance(section, dict):
+                return section
+        if any(k in data for k in cls.REQUIRED_KEYS):
+            return data
+        for value in data.values():
+            if isinstance(value, dict) and any(
+                k in value for k in cls.REQUIRED_KEYS
+            ):
+                return value
+        raise ValueError(
+            "Could not locate experiment setup configuration in YAML; "
+            "expected an 'ExperimentSetup' section or flat keys."
+        )
+
+
 class ReadFrame:
     """
     Scan a directory for TIFF files, capture scan/data numbers, store 2D arrays.
@@ -204,10 +575,30 @@ class ReadFrame:
         match = self._pattern.match(fname)
         if not match:
             return None
-        scan_number = int(match.group(1))
-        data_number = int(match.group(2))
+
+        numeric_groups = [
+            g
+            for g in (match.groups() or ())
+            if g and re.fullmatch(r"-?\d+", g)
+        ]
+        if not numeric_groups:
+            return None
         path = os.path.join(self.directory, fname)
         img = tifffile.imread(path)
+
+        if len(numeric_groups) == 1:
+            scan_number = int(numeric_groups[0])
+            return pd.DataFrame(
+                [
+                    {
+                        "scan_number": scan_number,
+                        "intensity": img,
+                    }
+                ]
+            )
+
+        scan_number = int(numeric_groups[0])
+        data_number = int(numeric_groups[1])
         return pd.DataFrame(
             [
                 {
@@ -222,17 +613,74 @@ class ReadFrame:
         files = [
             f for f in os.listdir(self.directory) if self._pattern.match(f)
         ]
+        if not files:
+            return pd.DataFrame(
+                columns=["scan_number", "data_number", "intensity"]
+            )
+
+        valid_files = []
+        group_counts = set()
+        for fname in files:
+            sample_match = self._pattern.match(fname)
+            numeric_groups = (
+                [
+                    g
+                    for g in (sample_match.groups() or ())
+                    if g and re.fullmatch(r"-?\d+", g)
+                ]
+                if sample_match
+                else []
+            )
+            if not numeric_groups:
+                raise ValueError(
+                    f"Filename '{fname}' does not produce integer capture groups with the provided pattern."
+                )
+            group_counts.add(1 if len(numeric_groups) == 1 else 2)
+            valid_files.append(fname)
+
+        if not valid_files:
+            return pd.DataFrame(
+                columns=["scan_number", "data_number", "intensity"]
+            )
+        if len(group_counts) != 1:
+            raise ValueError(
+                "Filename pattern yields inconsistent integer captures; ensure a uniform regex."
+            )
+        single_group = group_counts.pop() == 1
+
         if self.use_dask:
-            delayed_dfs = [delayed(self._process_file)(f) for f in files]
-            meta = {
-                "scan_number": "i8",
-                "data_number": "i8",
-                "intensity": object,
-            }
+            delayed_dfs = [delayed(self._process_file)(f) for f in valid_files]
+            if single_group:
+                meta = pd.DataFrame(
+                    {
+                        "scan_number": pd.Series(dtype="int64"),
+                        "intensity": pd.Series(dtype="object"),
+                    }
+                )
+            else:
+                meta = pd.DataFrame(
+                    {
+                        "scan_number": pd.Series(dtype="int64"),
+                        "data_number": pd.Series(dtype="int64"),
+                        "intensity": pd.Series(dtype="object"),
+                    }
+                )
             return dd.from_delayed(delayed_dfs, meta=meta)
-        dfs = [self._process_file(f) for f in files]
+
+        dfs = [self._process_file(f) for f in valid_files]
         dfs = [df for df in dfs if df is not None]
-        return pd.concat(dfs, ignore_index=True)
+        if not dfs:
+            columns = (
+                ["scan_number", "intensity"]
+                if single_group
+                else ["scan_number", "data_number", "intensity"]
+            )
+            return pd.DataFrame(columns=columns)
+
+        result = pd.concat(dfs, ignore_index=True)
+        if single_group:
+            return result[["scan_number", "intensity"]]
+        return result
 
 
 def write_rsm_vtk(polydata, scalar_name, filename):
@@ -494,13 +942,7 @@ def read_hdf5_tiff_data(directory):
                         print(f"Successfully read TIFF data from: {filename}")
                     else:
                         print(f"/entry/data not found in {filename}")
-            except (
-                OSError,
-                KeyError,
-                TypeError,
-                ValueError,
-                h5py.exceptions.HDF5Error,
-            ) as e:
+            except (OSError, KeyError, ValueError) as e:
                 print(f"Failed to read {filename}: {e}")
 
     return tiff_data_dict

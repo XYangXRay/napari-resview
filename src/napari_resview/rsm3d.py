@@ -15,17 +15,28 @@ _TWO_PI = 2.0 * np.pi
 
 class RSMBuilder:
     """
-    Build reciprocal-space maps from a prepared RSMDataLoader.
+    Build reciprocal-space maps from loaded experimental data.
 
-    Initialize with:
+    Two initialization modes:
+
+    1. Direct mode (preferred):
+        setup, ub, df = loader.load()
+        builder = RSMBuilder(setup, ub, df, ub_includes_2pi=True)
+
+    2. Legacy mode (backwards compatible):
         loader = RSMDataLoader(spec_file, tiff_dir, selected_scans=(21,))
         loader.load()
         builder = RSMBuilder(loader, ub_includes_2pi=True)
 
     Parameters
     ----------
-    loader : RSMDataLoader
-        Pre-loaded data loader instance (must have .setup, .UB, .df).
+    setup_or_loader : ExperimentSetup or RSMDataLoader
+        Either an ExperimentSetup object (when UB and df are provided) or
+        a pre-loaded data loader instance (legacy mode).
+    UB : numpy.ndarray, optional
+        UB matrix. If None, assumes legacy mode with loader as first arg.
+    df : pandas.DataFrame, optional
+        DataFrame with intensity and motor columns. If None, assumes legacy mode.
     motor_map : dict | None
         Optional mapping from logical motor names (omega, chi, phi, tth) to
         DataFrame column names.
@@ -45,7 +56,9 @@ class RSMBuilder:
 
     def __init__(
         self,
-        loader,
+        setup_or_loader,
+        UB=None,
+        df=None,
         *,
         motor_map: dict | None = None,
         ub_includes_2pi: bool = True,
@@ -54,7 +67,17 @@ class RSMBuilder:
         sample_axes: Sequence[str] | None = None,
         detector_axes: Sequence[str] | None = None,
     ):
-        self.setup, self.UB, self.df = loader.load()
+        # Support both new signature (setup, UB, df) and legacy (loader)
+        if UB is None and df is None:
+            # Legacy mode: first arg is a loader
+            loader = setup_or_loader
+            self.setup, self.UB, self.df = loader.load()
+        else:
+            # New mode: direct values
+            self.setup = setup_or_loader
+            self.UB = UB
+            self.df = df
+
         self.dtype = np.dtype(dtype)
         self.ub_includes_2pi = bool(ub_includes_2pi)
 

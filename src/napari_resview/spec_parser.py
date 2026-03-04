@@ -122,6 +122,26 @@ class ExperimentSetup:
             raise ValueError(
                 "Top-level YAML must be a mapping of keys to values."
             )
+
+        # Handle profile-based YAML structure (new format)
+        if "profiles" in data and isinstance(data.get("profiles"), dict):
+            active_profile = data.get("active_profile", "ISR").upper()
+            profile_data = data["profiles"].get(active_profile, {})
+            if isinstance(profile_data, dict):
+                # Look for ExperimentSetup in the active profile
+                for key in (
+                    "ExperimentSetup",
+                    "experiment",
+                    "experiment_setup",
+                ):
+                    sec = profile_data.get(key)
+                    if isinstance(sec, dict):
+                        return sec
+                # Check if profile data itself has required keys
+                if any(k in profile_data for k in cls.REQUIRED_KEYS):
+                    return profile_data
+
+        # Handle flat YAML structure (old format or fallback)
         for key in ("ExperimentSetup", "experiment", "experiment_setup"):
             sec = data.get(key)
             if isinstance(sec, dict):
