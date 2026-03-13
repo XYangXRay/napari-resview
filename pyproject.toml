@@ -5,7 +5,7 @@ description = "A napari plugin for 3D reciprocal space mapping"
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
-  {name = "Xiaogang Yang"},
+  {name = "AUTHORS.rst" },
   {email = "yangxg@bnl.gov"},
 ]
 classifiers = [
