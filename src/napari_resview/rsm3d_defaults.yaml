@@ -1,4 +1,4 @@
-active_profile: ISR
+active_profile: CMS
 profiles:
   ISR:
     data:
@@ -53,7 +53,7 @@ profiles:
       edges_path: /Users/xiaogangyang/data/cms_rsm3d/rsm3d_edges
   CMS:
     data:
-      loader_type: ISR
+      loader_type: CMS
       data_file: /Users/xiaogangyang/data/cms_rsm3d/stitched3
       scans: 796715-797076
       spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
@@ -63,10 +63,10 @@ profiles:
     ExperimentSetup:
       distance: 3.03
       pitch: 0.000172
-      ycenter: 475
-      xcenter: 485
+      ycenter: 487
+      xcenter: 491
       xpixels: 975
-      ypixels: 957
+      ypixels: 972
       energy: 13.49
       wavelength: 0.919
     Crystal:
@@ -83,7 +83,7 @@ profiles:
     crop:
       enable: true
       y_min: 0
-      y_max: 957
+      y_max: 972
       x_min: 0
       x_max: 975
     regrid:
