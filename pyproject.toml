@@ -44,7 +44,7 @@ dependencies = [
     "vtk>=9.0.0",
     "pandas>=2.3.3",
     "dask>=2024.8.0",
-    "pyarrow>=21.0.0",
+    "pyarrow>=21.0.0", "napari-threedee>=0.0.29,<0.0.30", "napari[qt]>=0.6.6,<0.7",
 ]
 
 [project.optional-dependencies]
