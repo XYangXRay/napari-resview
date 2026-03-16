@@ -53,6 +53,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           activate-environment: "true"
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+
       - name: Install Windows OpenGL
         uses: pyvista/setup-headless-display-action@v4.2
         with:
@@ -69,6 +72,9 @@ jobs:
         run: uvx --with tox-gh-actions tox
         env:
           PLATFORM: ${{ matrix.platform }}
+          # Windows optimizations
+          UV_LINK_MODE: copy
+          UV_INDEX_STRATEGY: unsafe-best-match
 
       - name: Coverage
         uses: codecov/codecov-action@v5

@@ -5186,8 +5186,8 @@ packages:
   requires_python: '>=3.10'
 - pypi: ./
   name: napari-resview
-  version: 0.1.3.dev1+g4f69f9631.d20260313
-  sha256: 89c138a8ae7ccf62a23f437803632978c189487700bbc4d4efc6cf4eae5b297b
+  version: 0.1.3
+  sha256: 72f40b51eb07ee0763eee464a614bd0384b1221d52e7e4514756c12655626de5
   requires_dist:
   - numpy
   - magicgui

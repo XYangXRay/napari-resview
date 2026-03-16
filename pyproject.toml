@@ -74,6 +74,17 @@ dev = [
     "pyyaml",
     "qtpy",
 ]
+# Minimal dependencies for Windows CI to speed up installation
+# Skips heavy packages (vtk, dask, pandas) not needed for basic widget tests
+dev-windows-minimal = [
+    "pytest",
+    "pytest-qt",
+    "napari[qt]",
+    "numpy",
+    "magicgui",
+    "qtpy",
+    "pyyaml",
+]
 
 [project.entry-points."napari.manifest"]
 napari-resview = "napari_resview:napari.yaml"
@@ -109,6 +120,11 @@ xfail_strict = true
 # filterwarnings = ["error"]  # recommended by PP309; deprecation warnings cause failures so leaving for the user to enable if desired
 log_cli_level = "INFO"
 testpaths = ["tests"]
+# Speed up test discovery and collection
+norecursedirs = [".*", "build", "dist", "*.egg", "node_modules", ".tox"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
 [tool.black]
 line-length = 79
