@@ -74,17 +74,6 @@ dev = [
     "pyyaml",
     "qtpy",
 ]
-# Minimal dependencies for Windows CI to speed up installation
-# Skips heavy packages (vtk, dask, pandas) not needed for basic widget tests
-dev-windows-minimal = [
-    "pytest",
-    "pytest-qt",
-    "napari[qt]",
-    "numpy",
-    "magicgui",
-    "qtpy",
-    "pyyaml",
-]
 
 [project.entry-points."napari.manifest"]
 napari-resview = "napari_resview:napari.yaml"
