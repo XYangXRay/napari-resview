@@ -183,3 +183,6 @@ napari-resview = { path = ".", editable = true, extras = ["dev"] }
 
 [tool.pixi.feature.dev.tasks]
 napari = "napari"
+
+[tool.pixi.dependencies]
+tox = ">=4.49.1,<5"

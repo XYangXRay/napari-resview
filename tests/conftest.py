@@ -10,9 +10,6 @@ import pytest
 # Speed up pytest on Windows by setting stricter collection patterns
 collect_ignore = []
 
-# Add napari pytest plugin fixtures
-pytest_plugins = ["napari.utils._testsupport"]
-
 
 def pytest_configure(config):
     """Configure pytest with custom markers and settings."""
