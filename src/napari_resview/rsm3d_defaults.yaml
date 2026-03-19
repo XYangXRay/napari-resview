@@ -63,10 +63,10 @@ profiles:
     ExperimentSetup:
       distance: 3.030008
       pitch: 0.000172
-      ycenter: 483
-      xcenter: 493
-      xpixels: 989
-      ypixels: 987
+      ycenter: 485
+      xcenter: 489
+      xpixels: 980
+      ypixels: 978
       energy: 13.49
       wavelength: 0.919
     Crystal:
@@ -83,9 +83,9 @@ profiles:
     crop:
       enable: true
       y_min: 0
-      y_max: 987
+      y_max: 978
       x_min: 0
-      x_max: 989
+      x_max: 980
     regrid:
       space: q
       grid_shape: 100,*,*

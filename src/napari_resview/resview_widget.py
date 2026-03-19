@@ -974,29 +974,108 @@ class ResviewDockWidget(QtWidgets.QWidget):
         axis3_lay.addWidget(self.slice_l_value_label.native)
         axis3_lay.addWidget(self.slice_l_visible.native)
 
-        # Container for slicing controls
-        slice_params_container = Container(
+        # Orthogonal Slicing Container
+        orthogonal_inner = QtWidgets.QWidget()
+        orthogonal_lay = QtWidgets.QVBoxLayout(orthogonal_inner)
+        orthogonal_lay.setContentsMargins(0, 0, 0, 0)
+        orthogonal_lay.setSpacing(8)
+        orthogonal_lay.addWidget(self.slice_axis1_label.native)
+        orthogonal_lay.addWidget(axis1_row)
+        orthogonal_lay.addWidget(self.slice_axis2_label.native)
+        orthogonal_lay.addWidget(axis2_row)
+        orthogonal_lay.addWidget(self.slice_axis3_label.native)
+        orthogonal_lay.addWidget(axis3_row)
+        # Add parameters directly without sub-group
+        orthogonal_lay.addWidget(self.slice_opacity_w.native)
+        orthogonal_lay.addWidget(self.slice_cmap_w.native)
+        orthogonal_lay.addWidget(self.slice_show_border_w.native)
+
+        # Cylindrical Slicing Controls (Q space only)
+        self.cylinder_radius_w = FloatSpinBox(
+            label="Cylinder Radius (Å⁻¹)",
+            min=0.0,
+            max=10.0,
+            step=0.01,
+            value=1.0,
+        )
+        self.cylinder_visible = CheckBox(label="Show Cylinder", value=False)
+        self.cylinder_samples_w = SpinBox(
+            label="Angular Samples", min=16, max=360, step=8, value=64
+        )
+        self.cylinder_opacity_w = FloatSpinBox(
+            label="Opacity", min=0.0, max=1.0, step=0.1, value=0.7
+        )
+        self.cylinder_cmap_w = ComboBox(
+            label="Colormap",
+            choices=["turbo", "viridis", "inferno", "plasma", "gray", "hsv"],
+        )
+        self.cylinder_cmap_w.value = "plasma"
+
+        cylinder_inner = QtWidgets.QWidget()
+        cylinder_lay = QtWidgets.QVBoxLayout(cylinder_inner)
+        cylinder_lay.setContentsMargins(0, 0, 0, 0)
+        cylinder_lay.setSpacing(8)
+        cylinder_params_container = Container(
             layout="vertical",
             widgets=[
-                self.slice_opacity_w,
-                self.slice_cmap_w,
-                self.slice_show_border_w,
+                self.cylinder_radius_w,
+                self.cylinder_samples_w,
+                self.cylinder_opacity_w,
+                self.cylinder_cmap_w,
+                self.cylinder_visible,
             ],
         )
+        cylinder_lay.addWidget(cylinder_params_container.native)
+
+        # Spherical Slicing Controls (Q space only)
+        self.sphere_radius_w = FloatSpinBox(
+            label="Sphere Radius (Å⁻¹)",
+            min=0.0,
+            max=10.0,
+            step=0.01,
+            value=1.0,
+        )
+        self.sphere_visible = CheckBox(label="Show Sphere", value=False)
+        self.sphere_samples_w = SpinBox(
+            label="Angular Samples", min=16, max=180, step=8, value=64
+        )
+        self.sphere_opacity_w = FloatSpinBox(
+            label="Opacity", min=0.0, max=1.0, step=0.1, value=0.7
+        )
+        self.sphere_cmap_w = ComboBox(
+            label="Colormap",
+            choices=["turbo", "viridis", "inferno", "plasma", "gray", "hsv"],
+        )
+        self.sphere_cmap_w.value = "viridis"
+
+        sphere_inner = QtWidgets.QWidget()
+        sphere_lay = QtWidgets.QVBoxLayout(sphere_inner)
+        sphere_lay.setContentsMargins(0, 0, 0, 0)
+        sphere_lay.setSpacing(8)
+        sphere_params_container = Container(
+            layout="vertical",
+            widgets=[
+                self.sphere_radius_w,
+                self.sphere_samples_w,
+                self.sphere_opacity_w,
+                self.sphere_cmap_w,
+                self.sphere_visible,
+            ],
+        )
+        sphere_lay.addWidget(sphere_params_container.native)
 
         analysis_inner = QtWidgets.QWidget()
         analysis_lay = QtWidgets.QVBoxLayout(analysis_inner)
         analysis_lay.setContentsMargins(0, 0, 0, 0)
         analysis_lay.setSpacing(10)
-        analysis_lay.addWidget(Label(value="<b>3D Slicing</b>").native)
-        analysis_lay.addWidget(self.slice_axis1_label.native)
-        analysis_lay.addWidget(axis1_row)
-        analysis_lay.addWidget(self.slice_axis2_label.native)
-        analysis_lay.addWidget(axis2_row)
-        analysis_lay.addWidget(self.slice_axis3_label.native)
-        analysis_lay.addWidget(axis3_row)
         analysis_lay.addWidget(
-            make_group("Parameters", slice_params_container.native)
+            make_group("Orthogonal Slicing", orthogonal_inner)
+        )
+        analysis_lay.addWidget(
+            make_group("Cylindrical Slicing (Q space only)", cylinder_inner)
+        )
+        analysis_lay.addWidget(
+            make_group("Spherical Slicing (Q space only)", sphere_inner)
         )
         analysis_lay.addStretch(1)
 
@@ -1112,6 +1191,22 @@ class ResviewDockWidget(QtWidgets.QWidget):
         )
         self.slice_k_visible.changed.connect(self._on_slice_visibility_changed)
         self.slice_l_visible.changed.connect(self._on_slice_visibility_changed)
+
+        # Connect cylindrical surface controls
+        self.cylinder_visible.changed.connect(
+            self._on_cylinder_visibility_changed
+        )
+        self.cylinder_radius_w.changed.connect(
+            self._on_cylinder_params_changed
+        )
+        self.cylinder_samples_w.changed.connect(
+            self._on_cylinder_params_changed
+        )
+
+        # Connect spherical surface controls
+        self.sphere_visible.changed.connect(self._on_sphere_visibility_changed)
+        self.sphere_radius_w.changed.connect(self._on_sphere_params_changed)
+        self.sphere_samples_w.changed.connect(self._on_sphere_params_changed)
 
         # Note: Crop geometry updates to detector size and beam center are now only
         # applied when the user clicks "Crop from ROI" button, not automatically
@@ -2278,6 +2373,29 @@ class ResviewDockWidget(QtWidgets.QWidget):
         self.slice_h_visible.value = False
         self.slice_k_visible.value = False
         self.slice_l_visible.value = False
+        self.cylinder_visible.value = False
+        self.sphere_visible.value = False
+
+        # Update cylinder and sphere radius ranges for Q space
+        if viz.space == "q":
+            # Calculate maximum radius from Qx, Qy ranges (for cylinder)
+            max_qx = max(abs(viz.xax.min()), abs(viz.xax.max()))
+            max_qy = max(abs(viz.yax.min()), abs(viz.yax.max()))
+            max_radius_cylinder = np.sqrt(max_qx**2 + max_qy**2)
+            self.cylinder_radius_w.max = float(max_radius_cylinder)
+            # Set default to a reasonable value
+            self.cylinder_radius_w.value = min(
+                1.0, float(max_radius_cylinder * 0.5)
+            )
+
+            # Calculate maximum radius from origin (for sphere)
+            max_qz = max(abs(viz.zax.min()), abs(viz.zax.max()))
+            max_radius_sphere = np.sqrt(max_qx**2 + max_qy**2 + max_qz**2)
+            self.sphere_radius_w.max = float(max_radius_sphere)
+            # Set default to a reasonable value
+            self.sphere_radius_w.value = min(
+                1.0, float(max_radius_sphere * 0.5)
+            )
 
         # Clear existing slice layers
         self._clear_slice_layers()
@@ -2383,10 +2501,300 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self._state[f"slice_layer_{axis}"] = None
 
     def _clear_slice_layers(self) -> None:
-        """Clear all slice layers."""
+        """Clear all slice layers, cylinder layer, and sphere layer."""
         self._remove_slice_layer("h")
         self._remove_slice_layer("k")
         self._remove_slice_layer("l")
+        self._remove_cylinder_layer()
+        self._remove_sphere_layer()
+
+    def _on_cylinder_visibility_changed(self) -> None:
+        """Handle cylindrical surface visibility checkbox changes."""
+        if self.cylinder_visible.value:
+            self._update_cylinder_surface()
+        else:
+            self._remove_cylinder_layer()
+
+    def _on_cylinder_params_changed(self) -> None:
+        """Handle changes to cylinder parameters (radius, samples)."""
+        if self.cylinder_visible.value:
+            self._update_cylinder_surface()
+
+    def _update_cylinder_surface(self) -> None:
+        """Extract and display cylindrical surface data as a triangulated mesh."""
+        viz = self._state.get("rsm_viz")
+        if viz is None:
+            return
+
+        # Check if we're in Q space
+        if viz.space != "q":
+            show_warning("Cylindrical surface is only available in Q space")
+            self.cylinder_visible.value = False
+            return
+
+        # Get parameters
+        radius = float(self.cylinder_radius_w.value)
+        n_samples = int(self.cylinder_samples_w.value)
+        opacity = float(self.cylinder_opacity_w.value)
+        colormap = str(self.cylinder_cmap_w.value)
+
+        # Remove existing cylinder layer
+        self._remove_cylinder_layer()
+
+        try:
+            # Extract cylindrical surface data as mesh
+            vertices, faces, values = self._extract_cylindrical_surface_mesh(
+                viz, radius, n_samples
+            )
+
+            if vertices is None or len(vertices) == 0:
+                show_warning(f"No data found at radius {radius:.3f} Å⁻¹")
+                return
+
+            # Add to viewer as Surface layer
+            layer = viz.viewer.add_surface(
+                (vertices, faces, values),
+                name=f"Cylinder_R={radius:.3f}",
+                colormap=colormap,
+                opacity=opacity,
+                shading="smooth",
+            )
+
+            # Store reference
+            self._state["cylinder_layer"] = layer
+            logger.info(
+                "Added cylindrical surface at radius %.3f Å⁻¹ with %d vertices and %d faces",
+                radius,
+                len(vertices),
+                len(faces),
+            )
+        except (RuntimeError, ValueError, TypeError) as e:
+            show_error(f"Failed to create cylindrical surface: {e}")
+            logger.error("Cylinder surface error: %s", e)
+
+    def _extract_cylindrical_surface_mesh(
+        self, viz, radius: float, n_samples: int
+    ) -> tuple:
+        """
+        Extract cylindrical surface data as a triangulated mesh.
+
+        Returns (vertices, faces, values) where:
+        - vertices: Nx3 array of (Qz, Qy, Qx) coordinates
+        - faces: Mx3 array of triangle vertex indices
+        - values: N array of intensity values at each vertex
+        """
+        # Get grid and axes
+        qx = viz.xax
+        qy = viz.yax
+        qz = viz.zax
+
+        # Extract data using log view if enabled
+        data = viz._log1p_clip(viz.volume) if viz.log_view else viz.volume
+
+        # Create angular samples (close the loop by including 0 at the end)
+        theta = np.linspace(0, 2 * np.pi, n_samples + 1)
+        n_theta = len(theta)
+        n_qz = len(qz)
+
+        # Calculate Qx, Qy positions at given radius for each angle
+        qx_circle = radius * np.cos(theta)
+        qy_circle = radius * np.sin(theta)
+
+        # Create vertex grid: n_qz x n_theta vertices
+        vertices = []
+        values = []
+
+        for iz, qz_val in enumerate(qz):
+            for _i_theta, (qx_val, qy_val) in enumerate(
+                zip(qx_circle, qy_circle, strict=True)
+            ):
+                # Find nearest grid indices for Qx, Qy
+                ix = np.argmin(np.abs(qx - qx_val))
+                iy = np.argmin(np.abs(qy - qy_val))
+
+                # Get intensity at this position (data is in ZYX order)
+                intensity = float(data[iz, iy, ix])
+
+                # Vertex coordinates in napari ZYX order
+                vertices.append([qz_val, qy_val, qx_val])
+                values.append(intensity)
+
+        vertices = np.array(vertices)
+        values = np.array(values)
+
+        # Create triangular faces connecting the vertices
+        # For a cylinder: connect each quad (iz, i_theta) with two triangles
+        faces = []
+        for iz in range(n_qz - 1):
+            for i_theta in range(n_theta - 1):
+                # Vertex indices for the quad
+                v00 = iz * n_theta + i_theta
+                v01 = iz * n_theta + (i_theta + 1)
+                v10 = (iz + 1) * n_theta + i_theta
+                v11 = (iz + 1) * n_theta + (i_theta + 1)
+
+                # Two triangles per quad
+                faces.append([v00, v01, v11])
+                faces.append([v00, v11, v10])
+
+        faces = np.array(faces)
+
+        if len(vertices) == 0:
+            return None, None, None
+
+        return vertices, faces, values
+
+    def _remove_cylinder_layer(self) -> None:
+        """Remove cylindrical surface layer."""
+        layer = self._state.get("cylinder_layer")
+        if layer is not None and self.viewer is not None:
+            with contextlib.suppress(ValueError, KeyError):
+                self.viewer.layers.remove(layer)
+            self._state["cylinder_layer"] = None
+
+    def _on_sphere_visibility_changed(self):
+        """Handler for sphere visibility checkbox."""
+        if self.sphere_visible.value:
+            self._update_sphere_surface()
+        else:
+            self._remove_sphere_layer()
+
+    def _on_sphere_params_changed(self):
+        """Handler for sphere parameter changes."""
+        if self.sphere_visible.value:
+            self._update_sphere_surface()
+
+    def _update_sphere_surface(self):
+        """Extract and display spherical surface in Q-space."""
+        viz = self._state.get("rsm_viz")
+        if viz is None:
+            return
+
+        # Check if we're in Q space
+        if viz.space != "q":
+            show_warning("Spherical surface is only available in Q space")
+            self.sphere_visible.value = False
+            return
+
+        # Get parameters
+        radius = float(self.sphere_radius_w.value)
+        n_samples = int(self.sphere_samples_w.value)
+        opacity = float(self.sphere_opacity_w.value)
+        colormap = str(self.sphere_cmap_w.value)
+
+        # Extract mesh
+        vertices, faces, values = self._extract_spherical_surface_mesh(
+            viz, radius, n_samples
+        )
+
+        if vertices is None:
+            show_error("Failed to extract spherical surface.")
+            self.sphere_visible.value = False
+            return
+
+        # Remove old layer
+        self._remove_sphere_layer()
+
+        # Add new surface layer
+        if self.viewer is not None:
+            layer = self.viewer.add_surface(
+                (vertices, faces, values),
+                name="Sphere Surface",
+                colormap=colormap,
+                opacity=opacity,
+                shading="smooth",
+            )
+            self._state["sphere_layer"] = layer
+
+    def _extract_spherical_surface_mesh(
+        self, viz, radius: float, n_samples: int
+    ) -> tuple:
+        """
+        Extract spherical surface mesh at given radius from Q-space origin.
+
+        Returns (vertices, faces, values) where:
+        - vertices: Nx3 array of (Qz, Qy, Qx) coordinates
+        - faces: Mx3 array of triangle vertex indices
+        - values: N array of intensity values at each vertex
+        """
+        try:
+            # Get grid and axes
+            qx = viz.xax
+            qy = viz.yax
+            qz = viz.zax
+
+            # Extract data using log view if enabled
+            data = viz._log1p_clip(viz.volume) if viz.log_view else viz.volume
+
+            # Generate spherical sampling
+            # Phi: polar angle from +Qz axis (0 to π)
+            # Theta: azimuthal angle around Qz axis (0 to 2π)
+            n_phi = n_samples
+            n_theta = n_samples * 2  # More samples in azimuthal direction
+
+            phi = np.linspace(0, np.pi, n_phi)
+            theta = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
+
+            # Create vertices and sample data
+            vertices = []
+            values = []
+
+            for _i_phi, phi_val in enumerate(phi):
+                for _i_theta, theta_val in enumerate(theta):
+                    # Convert spherical to Cartesian coordinates
+                    # Qx = r * sin(phi) * cos(theta)
+                    # Qy = r * sin(phi) * sin(theta)
+                    # Qz = r * cos(phi)
+                    qx_val = radius * np.sin(phi_val) * np.cos(theta_val)
+                    qy_val = radius * np.sin(phi_val) * np.sin(theta_val)
+                    qz_val = radius * np.cos(phi_val)
+
+                    # Find nearest grid indices
+                    ix = np.argmin(np.abs(qx - qx_val))
+                    iy = np.argmin(np.abs(qy - qy_val))
+                    iz = np.argmin(np.abs(qz - qz_val))
+
+                    # Get intensity at this position (data is in ZYX order)
+                    intensity = float(data[iz, iy, ix])
+
+                    # Vertex coordinates in napari ZYX order
+                    vertices.append([qz_val, qy_val, qx_val])
+                    values.append(intensity)
+
+            vertices = np.array(vertices)
+            values = np.array(values)
+
+            # Create triangular faces connecting the vertices
+            faces = []
+            for i_phi in range(n_phi - 1):
+                for i_theta in range(n_theta):
+                    i_theta_next = (i_theta + 1) % n_theta
+
+                    # Current quad vertices
+                    v0 = i_phi * n_theta + i_theta
+                    v1 = i_phi * n_theta + i_theta_next
+                    v2 = (i_phi + 1) * n_theta + i_theta_next
+                    v3 = (i_phi + 1) * n_theta + i_theta
+
+                    # Split quad into two triangles
+                    faces.append([v0, v1, v2])
+                    faces.append([v0, v2, v3])
+
+            faces = np.array(faces)
+
+            return vertices, faces, values
+
+        except (ValueError, IndexError, KeyError) as e:
+            print(f"Error extracting spherical surface: {e}")
+            return None, None, None
+
+    def _remove_sphere_layer(self):
+        """Remove the sphere surface layer from the viewer."""
+        layer = self._state.get("sphere_layer")
+        if layer is not None and self.viewer is not None:
+            with contextlib.suppress(ValueError, KeyError):
+                self.viewer.layers.remove(layer)
+            self._state["sphere_layer"] = None
 
     def on_export_vtk(self) -> None:
         if self._state.get("grid") is None or self._state.get("edges") is None:
