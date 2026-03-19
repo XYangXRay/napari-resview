@@ -48,6 +48,7 @@ from typing import Any
 
 import napari
 import numpy as np
+import tifffile
 import yaml
 from magicgui.widgets import (
     CheckBox,
@@ -820,16 +821,16 @@ class ResviewDockWidget(QtWidgets.QWidget):
         self.export_vtr_w = FileEdit(mode="w", label="VTK (.vtr)")
         _ = set_file_button_symbol(self.export_vtr_w, "📂")
 
-        self.export_grid_w = FileEdit(mode="w", label="Grid (.npy)")
+        self.export_grid_w = FileEdit(mode="w", label="Grid (.tiff)")
         _ = set_file_button_symbol(self.export_grid_w, "📂")
 
-        self.export_edges_w = FileEdit(mode="w", label="Edges (.npz)")
+        self.export_edges_w = FileEdit(mode="w", label="Grid+Edges (.npz)")
         _ = set_file_button_symbol(self.export_edges_w, "📂")
 
         self.btn_view = PushButton(text="🔭 View RSM")
         self.btn_export = PushButton(text="💾 VTK")
-        self.btn_export_grid = PushButton(text="💾 Grid")
-        self.btn_export_edges = PushButton(text="💾 Edges")
+        self.btn_export_grid = PushButton(text="💾 TIFF")
+        self.btn_export_edges = PushButton(text="💾 NPZ")
 
         self.btn_stop = QtWidgets.QPushButton("Stop")
         self.btn_refresh = QtWidgets.QPushButton("Refresh")
@@ -2422,24 +2423,27 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.set_busy(False)
 
     def on_export_grid(self) -> None:
-        """Export the 3D grid array as a .npy file."""
+        """Export the 3D grid array as a TIFF file."""
         if self._state.get("grid") is None:
             show_error("Regrid first, then export.")
             return
 
         out_path = as_path_str(self.export_grid_w.value).strip()
         if not out_path:
-            show_error("Choose an output grid file path (.npy).")
+            show_error("Choose an output grid file path (.tiff).")
             return
-        if not out_path.lower().endswith(".npy"):
-            out_path += ".npy"
+        if not out_path.lower().endswith((".tif", ".tiff")):
+            out_path += ".tiff"
 
         self.set_busy(True)
         self.set_progress(None, busy=True)
         self.status(f"Exporting grid → {out_path}")
 
         try:
-            np.save(out_path, self._state["grid"])
+            grid_data = self._state["grid"]
+            # Ensure data is in a TIFF-compatible format
+            # TIFF supports uint8, uint16, float32, etc.
+            tifffile.imwrite(out_path, grid_data, compression="zlib")
             self.set_progress(100, busy=False)
             self.status(f"Exported grid: {out_path}")
             show_info(f"Exported grid: {out_path}")
@@ -2451,43 +2455,48 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self.set_busy(False)
 
     def on_export_edges(self) -> None:
-        """Export the coordinate arrays (Qx, Qy, Qz or H, K, L) as a .npz file."""
-        if self._state.get("edges") is None:
+        """Export both grid and coordinate arrays (grid + Qx/Qy/Qz or H/K/L) as a single .npz file."""
+        if self._state.get("grid") is None or self._state.get("edges") is None:
             show_error("Regrid first, then export.")
             return
 
         out_path = as_path_str(self.export_edges_w.value).strip()
         if not out_path:
-            show_error("Choose an output edges file path (.npz).")
+            show_error("Choose an output file path (.npz).")
             return
         if not out_path.lower().endswith(".npz"):
             out_path += ".npz"
 
         self.set_busy(True)
         self.set_progress(None, busy=True)
-        self.status(f"Exporting edges → {out_path}")
+        self.status(f"Exporting grid+edges → {out_path}")
 
         try:
             # Get the current space setting to determine axis names
             space = str(self.space_w.value or "hkl").lower()
             xaxis, yaxis, zaxis = self._state["edges"]
+            grid_data = self._state["grid"]
 
             if space == "q":
-                # Q space: Qx, Qy, Qz
-                np.savez(out_path, Qx=xaxis, Qy=yaxis, Qz=zaxis)
-                self.status(f"Exported edges (Qx, Qy, Qz): {out_path}")
-                show_info(f"Exported edges (Qx, Qy, Qz): {out_path}")
+                # Q space: grid + Qx, Qy, Qz
+                np.savez_compressed(
+                    out_path, grid=grid_data, Qx=xaxis, Qy=yaxis, Qz=zaxis
+                )
+                self.status(f"Exported grid+edges (Qx, Qy, Qz): {out_path}")
+                show_info(f"Exported grid+edges (Qx, Qy, Qz): {out_path}")
             else:
-                # HKL space: H, K, L
-                np.savez(out_path, H=xaxis, K=yaxis, L=zaxis)
-                self.status(f"Exported edges (H, K, L): {out_path}")
-                show_info(f"Exported edges (H, K, L): {out_path}")
+                # HKL space: grid + H, K, L
+                np.savez_compressed(
+                    out_path, grid=grid_data, H=xaxis, K=yaxis, L=zaxis
+                )
+                self.status(f"Exported grid+edges (H, K, L): {out_path}")
+                show_info(f"Exported grid+edges (H, K, L): {out_path}")
 
             self.set_progress(100, busy=False)
         except (OSError, RuntimeError, ValueError, TypeError) as e:
-            show_error(f"Export edges error: {e}")
+            show_error(f"Export error: {e}")
             self.set_progress(0, busy=False)
-            self.status(f"Export edges failed: {e}")
+            self.status(f"Export failed: {e}")
         finally:
             self.set_busy(False)
 
