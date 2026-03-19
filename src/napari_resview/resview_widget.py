@@ -2075,6 +2075,32 @@ class ResviewDockWidget(QtWidgets.QWidget):
             show_error("Load data first.")
             return
 
+        # Sync UI widget values to setup object before building
+        # This ensures any changes made in the Data tab (e.g., from crop) are used
+        try:
+            setup.ypixels = int(self.ypixels_w.value)
+            setup.xpixels = int(self.xpixels_w.value)
+            setup.ycenter = int(self.ycenter_w.value)
+            setup.xcenter = int(self.xcenter_w.value)
+            setup.distance = float(self.distance_w.value)
+            setup.pitch = float(self.pitch_w.value)
+            setup.energy = float(self.energy_w.value)
+            # Only update wavelength if it's set (non-zero)
+            if float(self.wavelength_w.value or 0) > 0:
+                setup.wavelength = float(self.wavelength_w.value)
+            self._state["setup"] = setup
+            logger.info(
+                "Synced UI to setup: detector=%dx%d, center=(%d, %d), dist=%.4f, energy=%.3f",
+                setup.xpixels,
+                setup.ypixels,
+                setup.xcenter,
+                setup.ycenter,
+                setup.distance,
+                setup.energy,
+            )
+        except (AttributeError, TypeError, ValueError) as sync_err:
+            logger.warning("Failed to sync UI to setup: %s", sync_err)
+
         self.set_busy(True)
         self.set_progress(None, busy=True)
         self.status("Computing Q/HKL/intensity…")
