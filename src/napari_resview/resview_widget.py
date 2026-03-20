@@ -1864,7 +1864,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
             # Add beam center cross marker
             beam_y = float(self.ycenter_w.value or 0)
             beam_x = float(self.xcenter_w.value or 0)
-            cross_size = 20  # Length of cross arms in pixels
+            cross_size = 40  # Length of cross arms in pixels (doubled)
             # Create cross as two perpendicular lines
             vertical_line = np.array(
                 [[beam_y - cross_size, beam_x], [beam_y + cross_size, beam_x]]
@@ -1972,7 +1972,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
             logger.debug("_on_roi_changed: Error %s", e)
 
     def _on_beam_center_dragged(self, _event=None) -> None:
-        """Update UI widgets when beam center cross is dragged."""
+        """Update UI widgets when beam center is dragged."""
         if self._updating_beam_center:
             return
         beam_center_layer = self._state.get("beam_center_layer")
@@ -1981,12 +1981,34 @@ class ResviewDockWidget(QtWidgets.QWidget):
         try:
             self._updating_beam_center = True
             # The cross consists of two lines (vertical and horizontal)
-            # Get the center point from the vertical line
+            # Detect which line was moved and extract center from it
             vertical_line = beam_center_layer.data[0]
-            beam_y = float((vertical_line[0][0] + vertical_line[1][0]) / 2)
-            beam_x = float(
-                vertical_line[0][1]
-            )  # x is constant in vertical line
+            horizontal_line = beam_center_layer.data[1]
+
+            # Get center from vertical line (middle of y-coordinates, constant x)
+            v_center_y = float((vertical_line[0][0] + vertical_line[1][0]) / 2)
+            v_center_x = float(vertical_line[0][1])
+
+            # Get center from horizontal line (constant y, middle of x-coordinates)
+            h_center_y = float(horizontal_line[0][0])
+            h_center_x = float(
+                (horizontal_line[0][1] + horizontal_line[1][1]) / 2
+            )
+
+            # Use whichever line was moved (has different center from the other)
+            # Default to vertical line if both match
+            if (
+                abs(v_center_y - h_center_y) > 0.5
+                or abs(v_center_x - h_center_x) > 0.5
+            ):
+                # Lines don't match - one was dragged
+                # Use vertical line's position to update everything
+                beam_y = v_center_y
+                beam_x = v_center_x
+            else:
+                # Both lines match, use vertical line
+                beam_y = v_center_y
+                beam_x = v_center_x
 
             # Update UI widgets if values changed
             new_y = int(round(beam_y))
@@ -1995,8 +2017,39 @@ class ResviewDockWidget(QtWidgets.QWidget):
                 self.ycenter_w.value = new_y
             if self.xcenter_w.value != new_x:
                 self.xcenter_w.value = new_x
+
+            # Schedule a delayed sync to fix both lines after drag completes
+            # This avoids interfering with napari's drag operation
+            QtCore.QTimer.singleShot(100, self._sync_beam_center_cross)
+
         except (AttributeError, IndexError, ValueError) as e:
             logger.debug("_on_beam_center_dragged: Error %s", e)
+        finally:
+            self._updating_beam_center = False
+
+    def _sync_beam_center_cross(self) -> None:
+        """Synchronize both cross lines to be centered at the current beam center."""
+        if self._updating_beam_center:
+            return
+        beam_center_layer = self._state.get("beam_center_layer")
+        if beam_center_layer is None:
+            return
+        try:
+            self._updating_beam_center = True
+            beam_y = float(self.ycenter_w.value or 0)
+            beam_x = float(self.xcenter_w.value or 0)
+            cross_size = 40
+
+            # Create properly centered cross lines
+            new_vertical = np.array(
+                [[beam_y - cross_size, beam_x], [beam_y + cross_size, beam_x]]
+            )
+            new_horizontal = np.array(
+                [[beam_y, beam_x - cross_size], [beam_y, beam_x + cross_size]]
+            )
+            beam_center_layer.data = [new_vertical, new_horizontal]
+        except (AttributeError, ValueError) as e:
+            logger.debug("_sync_beam_center_cross: Error %s", e)
         finally:
             self._updating_beam_center = False
 
@@ -2011,7 +2064,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
             self._updating_beam_center = True
             beam_y = float(self.ycenter_w.value or 0)
             beam_x = float(self.xcenter_w.value or 0)
-            cross_size = 20
+            cross_size = 40  # Doubled cross size
 
             # Create new cross lines
             vertical_line = np.array(
