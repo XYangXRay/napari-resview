@@ -30,21 +30,18 @@ requires-python = ">=3.10, <3.14"
 # See best practices: https://napari.org/stable/plugins/building_a_plugin/best_practices.html
 dependencies = [
     "numpy",
-    "magicgui",
+    "magicgui>=0.10.1",
+    "qtpy>=2.4.3",
     "xrayutilities==1.7.10",
-    "qtpy",
-    "scikit-image",
     "h5py",
     "hdf5plugin",
     "pyyaml>=6.0.3",
-    "qtpy>=2.4.3",
-    "pyside6>=6.8",
-    "pyqt6",
-    "magicgui>=0.10.1",
     "vtk>=9.0.0",
     "pandas>=2.3.3",
     "dask>=2024.8.0",
-    "pyarrow>=21.0.0", "napari-threedee>=0.0.29,<0.0.30", "napari[qt]>=0.6.6,<0.7",
+    "pyarrow>=21.0.0",
+    "tifffile",
+    "scipy",
 ]
 
 [project.optional-dependencies]
@@ -70,7 +67,6 @@ dev = [
     "numpy",
     "magicgui",
     "h5py",
-    "scikit-image",
     "pyyaml",
     "qtpy",
 ]

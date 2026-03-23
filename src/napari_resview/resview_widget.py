@@ -585,8 +585,8 @@ class ResviewDockWidget(QtWidgets.QWidget):
         data_lay.addWidget(self.isr_group)
         data_lay.addWidget(self.cms_group)
         data_lay.addWidget(self.setup_group)
-        data_lay.addWidget(self.crop_group)
         data_lay.addWidget(btn_row1)
+        data_lay.addWidget(self.crop_group)
         data_lay.addStretch(1)
 
         tab_data = make_scroll(data_inner)
