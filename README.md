@@ -41,7 +41,6 @@ pip install git+https://github.com/XYangXRay/napari-resview.git
 
 ### Key Features
 
-- **🔬 Multi-Beamline Support**: Pre-configured profiles for ISR and CMS beamlines with YAML-based configuration
 - **📊 3D Visualization**: Interactive 3D rendering of reciprocal space maps using napari's powerful volume rendering
 - **✂️ ROI-Based Cropping**: Define and apply regions of interest with visual feedback
 - **🏗️ RSM Construction Pipeline**: Complete workflow from raw SPEC/TIFF data to 3D reciprocal space
@@ -78,7 +77,8 @@ Then in napari: **Plugins → napari-resview: ResView Widget**
 1. **Configure Loader Profile**
 
    - Select beamline profile (ISR or CMS)
-   - Specify SPEC file, setup YAML, and TIFF directory
+   - If ISR beamline, specify SPEC file, setup YAML, and TIFF directory
+   - If CMS beamline, specify rotation angles
    - Configure any additional loader parameters
 2. **Load Data**
 
@@ -102,7 +102,7 @@ Then in napari: **Plugins → napari-resview: ResView Widget**
    - Export slices or subvolumes
 6. **Export**
 
-   - Save RSM volume to VTR format
+   - Save RSM volume to .tiff, .npz, or .vtr format as you like
    - Export for use in ParaView or other visualization tools
 
 ---
@@ -195,8 +195,8 @@ wavelength: 1.2398  # Angstroms
 detector:
   pixel_size: 55e-6  # meters
   distance: 0.5  # meters
-  beam_center: [512, 512]
-  size: [1024, 1024]
+  beam_center: [257, 515]
+  size: [514, 1030]
 angles:
   omega: 0.0
   chi: 90.0
@@ -476,18 +476,6 @@ Also consider citing the underlying tools:
 - Built using the [napari] framework and [napari-plugin-template]
 - Powered by [xrayutilities] for crystallographic calculations
 - Thanks to the napari community for excellent documentation and support
-
----
-
-## Related Projects
-
-- [napari](https://napari.org/) - Multi-dimensional image viewer for Python
-- [xrayutilities](https://xrayutilities.sourceforge.io/) - X-ray diffraction analysis
-- [PyMca](http://pymca.sourceforge.net/) - X-ray fluorescence toolkit
-- [DIOPTAS](https://dioptas.readthedocs.io/) - GUI for 2D X-ray diffraction data
-- [GSAS-II](https://subversion.xray.aps.anl.gov/trac/pyGSAS) - Crystallographic data analysis
-
----
 
 ## License
 

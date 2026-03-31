@@ -1,4 +1,4 @@
-active_profile: CMS
+active_profile: ISR
 profiles:
   ISR:
     data:
@@ -12,10 +12,10 @@ profiles:
     ExperimentSetup:
       distance: 0.78105
       pitch: 7.5e-05
-      ycenter: 185
-      xcenter: 257
-      xpixels: 514
-      ypixels: 384
+      ycenter: 257
+      xcenter: 515
+      xpixels: 1030
+      ypixels: 514
       energy: 11.566
       wavelength: 1.072
     Crystal:
@@ -53,7 +53,7 @@ profiles:
       edges_path: /Users/xiaogangyang/data/cms_rsm3d/rsm3d_edges
   CMS:
     data:
-      loader_type: CMS
+      loader_type: ISR
       data_file: /Users/xiaogangyang/data/cms_rsm3d/stitched3
       scans: 796715-797076
       spec_file: /Users/xiaogangyang/data/isr_rsm3d/setup_6oct23
