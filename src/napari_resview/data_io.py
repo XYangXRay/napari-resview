@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import contextlib
+import logging
 import numbers
 import os
 import re
+from enum import Enum
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
 
 import h5py
 import numpy as np
@@ -23,6 +25,8 @@ except ImportError:
     DASK_AVAILABLE = False
 
 from .spec_parser import SpecParser
+
+logger = logging.getLogger(__name__)
 
 
 class RSMDataLoader_ISR:
@@ -683,6 +687,769 @@ class ReadFrame:
         if single_group:
             return result[["scan_number", "intensity"]]
         return result
+
+
+# ---------------------------------------------------------------------------
+# NeXus / HDF5 loader
+# ---------------------------------------------------------------------------
+HC_KEV_A = 12.398419843320026  # hc in keV·Å
+
+
+class ScanScheme(Enum):
+    """Recognised diffractometer / scan geometries."""
+
+    FOUR_CIRCLE = "4-circle"
+    SIX_CIRCLE = "6-circle"
+    ANGULAR_SCAN = "angular_scan"
+    UNKNOWN = "unknown"
+
+
+# Canonical motor name → known aliases (case-insensitive matching)
+_MOTOR_ALIASES: dict[str, list[str]] = {
+    "omega": ["omega", "th", "theta", "sample_theta", "sam_th", "vth"],
+    "chi": ["chi", "sample_chi", "sam_chi"],
+    "phi": ["phi", "sample_phi", "sam_phi"],
+    "tth": [
+        "tth",
+        "two_theta",
+        "2theta",
+        "det_theta",
+        "vtth",
+        "twotheta",
+        "gamma",
+    ],
+    "mu": ["mu", "sample_mu", "sam_mu"],
+    "delta": ["delta", "det_delta"],
+    "nu": ["nu", "det_nu", "nutation"],
+}
+
+# Build reverse map: alias → canonical
+_ALIAS_TO_CANONICAL: dict[str, str] = {}
+for _canon, _aliases in _MOTOR_ALIASES.items():
+    for _a in _aliases:
+        _ALIAS_TO_CANONICAL[_a.lower()] = _canon
+
+
+def _nxs_scalar(ds: h5py.Dataset) -> float:
+    """Read an HDF5 dataset and return a Python float."""
+    val = ds[()]
+    if isinstance(val, np.ndarray):
+        val = val.flat[0]
+    return float(val)
+
+
+def _find_groups_by_nx_class(
+    parent: h5py.Group, nx_class: str
+) -> list[h5py.Group]:
+    """Return child groups whose ``NX_class`` attribute matches *nx_class*."""
+    results = []
+    for name in parent:
+        obj = parent[name]
+        if isinstance(obj, h5py.Group):
+            cls_attr = obj.attrs.get("NX_class")
+            if cls_attr is not None:
+                cls_str = (
+                    cls_attr.decode()
+                    if isinstance(cls_attr, bytes)
+                    else str(cls_attr)
+                )
+                if cls_str == nx_class:
+                    results.append(obj)
+    return results
+
+
+def _find_nxs_dataset(
+    group: h5py.Group, *candidates: str
+) -> h5py.Dataset | None:
+    """Return the first dataset found under *group* for any candidate name."""
+    for name in candidates:
+        if name in group and isinstance(group[name], h5py.Dataset):
+            return group[name]
+    return None
+
+
+def _read_nxs_array(ds: h5py.Dataset) -> np.ndarray:
+    """Read a dataset into a numpy array, squeezing unit dimensions."""
+    return np.squeeze(np.asarray(ds[()]))
+
+
+def _resolve_motor_name(raw_name: str) -> str | None:
+    """Map a raw motor name to a canonical name, or None if unrecognised."""
+    return _ALIAS_TO_CANONICAL.get(raw_name.lower().strip())
+
+
+class NexusFileInspector:
+    """
+    Inspect a NeXus/HDF5 file and return a structured summary of its entries,
+    instruments, detectors, samples, and positioners.
+    """
+
+    def __init__(self, h5file: h5py.File):
+        self._f = h5file
+
+    def list_entries(self) -> list[str]:
+        """Return names of top-level NXentry groups."""
+        entries = _find_groups_by_nx_class(self._f, "NXentry")
+        return [e.name for e in entries]
+
+    def summarise(self) -> dict[str, Any]:
+        """Return a nested dict describing every entry in the file."""
+        summary: dict[str, Any] = {}
+        for entry in _find_groups_by_nx_class(self._f, "NXentry"):
+            entry_info: dict[str, Any] = {"path": entry.name}
+
+            instruments = _find_groups_by_nx_class(entry, "NXinstrument")
+            if instruments:
+                inst = instruments[0]
+                entry_info["instrument"] = inst.name
+                entry_info["detectors"] = [
+                    g.name
+                    for g in _find_groups_by_nx_class(inst, "NXdetector")
+                ]
+                entry_info["monochromators"] = [
+                    g.name
+                    for g in _find_groups_by_nx_class(inst, "NXmonochromator")
+                ]
+
+            samples = _find_groups_by_nx_class(entry, "NXsample")
+            if samples:
+                entry_info["sample"] = samples[0].name
+
+            data_groups = _find_groups_by_nx_class(entry, "NXdata")
+            entry_info["data_groups"] = [g.name for g in data_groups]
+
+            motors = self._discover_motors(entry)
+            entry_info["motors"] = motors
+
+            summary[entry.name] = entry_info
+        return summary
+
+    def _discover_motors(self, entry: h5py.Group) -> dict[str, str]:
+        """Find motor datasets and map canonical name → HDF5 path."""
+        found: dict[str, str] = {}
+
+        for inst in _find_groups_by_nx_class(entry, "NXinstrument"):
+            for sub_name in ("positioners", "diffractometer", "motors"):
+                if sub_name in inst and isinstance(inst[sub_name], h5py.Group):
+                    self._scan_group_for_motors(inst[sub_name], found)
+            self._scan_group_for_motors(inst, found)
+
+        for dg in _find_groups_by_nx_class(entry, "NXdata"):
+            self._scan_group_for_motors(dg, found)
+
+        self._scan_group_for_motors(entry, found)
+        return found
+
+    def _scan_group_for_motors(
+        self, group: h5py.Group, out: dict[str, str]
+    ) -> None:
+        for name in group:
+            obj = group[name]
+            if not isinstance(obj, h5py.Dataset):
+                continue
+            canon = _resolve_motor_name(name)
+            if canon and canon not in out:
+                out[canon] = obj.name
+
+
+class RSMDataLoader_Nexus:
+    """
+    Load a NeXus/HDF5 file and return ``(ExperimentSetup, UB, DataFrame)``.
+
+    All experimental setup, crystal orientation, detector frames, and motor
+    positions are extracted from a single NeXus entry.  No external YAML,
+    SPEC file, or TIFF directory is required.
+
+    Supports 4-circle, 6-circle, and angular SAXS/WAXS scan schemes.
+
+    Parameters
+    ----------
+    nexus_file : str | Path
+        Path to the ``.nxs`` or ``.h5`` file.
+    entry : str | None
+        HDF5 path of the NXentry to use.  *None* → first entry found.
+    selected_scans : int | list[int] | None
+        Scan indices to keep.  *None* → all.
+    motor_map : dict | None
+        Explicit ``{canonical_motor: hdf5_dataset_path}`` overrides.
+    scan_scheme : str | ScanScheme | None
+        Force a scanning geometry.  *None* → auto-detect.
+    detector_path : str | None
+        Explicit HDF5 path to the detector group.
+    data_key : str | None
+        Dataset name inside the detector group holding image frames.
+    """
+
+    _DATA_KEYS = ("data", "counts", "image", "images", "frames")
+
+    def __init__(
+        self,
+        nexus_file: str | Path,
+        *,
+        entry: str | None = None,
+        selected_scans: int | list[int] | None = None,
+        motor_map: dict[str, str] | None = None,
+        scan_scheme: str | ScanScheme | None = None,
+        detector_path: str | None = None,
+        data_key: str | None = None,
+    ):
+        self.nexus_file = Path(nexus_file)
+        self.entry_path = entry
+        self.selected_scans = selected_scans
+        self.motor_map = motor_map or {}
+        self.detector_path = detector_path
+        self.data_key = data_key
+
+        if scan_scheme is None:
+            self._scan_scheme = None
+        elif isinstance(scan_scheme, ScanScheme):
+            self._scan_scheme = scan_scheme
+        else:
+            self._scan_scheme = ScanScheme(scan_scheme)
+
+    # -----------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------
+
+    def load(self):
+        """
+        Returns
+        -------
+        setup : ExperimentSetup
+        UB : np.ndarray, shape (3, 3)
+        df : pd.DataFrame
+        """
+        if not self.nexus_file.is_file():
+            raise FileNotFoundError(f"NeXus file not found: {self.nexus_file}")
+
+        with h5py.File(str(self.nexus_file), "r") as f:
+            entry = self._resolve_entry(f)
+            setup = self._extract_setup(entry)
+            ub = self._extract_ub(entry)
+            motors = self._discover_motors(f, entry)
+            scheme = self._detect_scheme(motors)
+            frames, frame_indices = self._extract_frames(entry)
+            df = self._build_dataframe(
+                frames, frame_indices, motors, scheme, entry
+            )
+
+        if self.selected_scans is not None:
+            wanted = (
+                {int(self.selected_scans)}
+                if isinstance(self.selected_scans, int)
+                else {int(s) for s in self.selected_scans}
+            )
+            df = df[df["scan_number"].isin(wanted)]
+            if df.empty:
+                raise ValueError(
+                    "No frames match the requested selected_scans."
+                )
+            df = df.reset_index(drop=True)
+
+        return setup, ub, df
+
+    def inspect(self) -> dict[str, Any]:
+        """Return a structural summary of the NeXus file (for UI / debug)."""
+        with h5py.File(str(self.nexus_file), "r") as f:
+            return NexusFileInspector(f).summarise()
+
+    # -----------------------------------------------------------------
+    # Entry resolution
+    # -----------------------------------------------------------------
+
+    def _resolve_entry(self, f: h5py.File) -> h5py.Group:
+        if self.entry_path is not None:
+            if self.entry_path not in f:
+                raise KeyError(
+                    f"Requested entry '{self.entry_path}' not found in file."
+                )
+            return f[self.entry_path]
+
+        entries = _find_groups_by_nx_class(f, "NXentry")
+        if entries:
+            return entries[0]
+
+        for name in ("entry", "entry1", "scan"):
+            if name in f and isinstance(f[name], h5py.Group):
+                return f[name]
+
+        for name in f:
+            if isinstance(f[name], h5py.Group):
+                return f[name]
+
+        raise ValueError("No usable entry group found in NeXus file.")
+
+    # -----------------------------------------------------------------
+    # Experiment setup extraction
+    # -----------------------------------------------------------------
+
+    def _extract_setup(self, entry: h5py.Group) -> ExperimentSetup:
+        instruments = _find_groups_by_nx_class(entry, "NXinstrument")
+        inst = instruments[0] if instruments else entry
+
+        det = self._find_detector(inst, entry)
+        distance = self._read_detector_field(det, "distance", fallback=1.0)
+        pixel_x = self._read_detector_field(
+            det, "x_pixel_size", fallback=75e-6
+        )
+        pixel_y = self._read_detector_field(
+            det, "y_pixel_size", fallback=75e-6
+        )
+        pitch = (pixel_x + pixel_y) / 2.0
+
+        beam_cx = self._read_detector_field(
+            det, "beam_center_x", fallback=None
+        )
+        beam_cy = self._read_detector_field(
+            det, "beam_center_y", fallback=None
+        )
+
+        xpixels, ypixels = self._get_detector_shape(det, entry)
+
+        if beam_cx is not None and pixel_x > 0:
+            if abs(beam_cx) > xpixels:
+                xcenter = int(round(beam_cx))
+            else:
+                xcenter = int(round(beam_cx / pixel_x))
+        else:
+            xcenter = xpixels // 2
+
+        if beam_cy is not None and pixel_y > 0:
+            if abs(beam_cy) > ypixels:
+                ycenter = int(round(beam_cy))
+            else:
+                ycenter = int(round(beam_cy / pixel_y))
+        else:
+            ycenter = ypixels // 2
+
+        energy_keV, wavelength_A = self._extract_energy_wavelength(inst, entry)
+
+        return ExperimentSetup(
+            distance=distance,
+            pitch=pitch,
+            ycenter=ycenter,
+            xcenter=xcenter,
+            xpixels=xpixels,
+            ypixels=ypixels,
+            energy=energy_keV,
+            wavelength=wavelength_A,
+        )
+
+    def _find_detector(
+        self, inst: h5py.Group, entry: h5py.Group
+    ) -> h5py.Group | None:
+        if self.detector_path is not None:
+            root = inst.file
+            if self.detector_path in root:
+                return root[self.detector_path]
+
+        detectors = _find_groups_by_nx_class(inst, "NXdetector")
+        if detectors:
+            return detectors[0]
+
+        for name in ("detector", "det", "pilatus", "eiger", "lambda"):
+            if name in inst and isinstance(inst[name], h5py.Group):
+                return inst[name]
+
+        return None
+
+    @staticmethod
+    def _read_detector_field(
+        det: h5py.Group | None, field: str, *, fallback: float | None
+    ) -> float | None:
+        if det is None:
+            return fallback
+        ds = _find_nxs_dataset(det, field)
+        if ds is None:
+            return fallback
+        val = _nxs_scalar(ds)
+        units = ds.attrs.get("units")
+        if units is not None:
+            units_str = (
+                units.decode() if isinstance(units, bytes) else str(units)
+            ).lower()
+            if units_str == "mm":
+                val *= 1e-3
+            elif units_str == "um":
+                val *= 1e-6
+            elif units_str == "cm":
+                val *= 1e-2
+        return val
+
+    def _get_detector_shape(
+        self, det: h5py.Group | None, entry: h5py.Group
+    ) -> tuple[int, int]:
+        if det is not None:
+            for x_key, y_key in [
+                ("x_pixel_number", "y_pixel_number"),
+                ("xpixels", "ypixels"),
+            ]:
+                if x_key in det and y_key in det:
+                    return int(_nxs_scalar(det[x_key])), int(
+                        _nxs_scalar(det[y_key])
+                    )
+
+        data_ds = self._find_data_dataset(det, entry)
+        if data_ds is not None:
+            shape = data_ds.shape
+            if len(shape) == 2:
+                return shape[1], shape[0]
+            elif len(shape) == 3:
+                return shape[2], shape[1]
+
+        return 1024, 1024
+
+    def _extract_energy_wavelength(
+        self, inst: h5py.Group, entry: h5py.Group
+    ) -> tuple[float | None, float | None]:
+        energy_keV = None
+        wavelength_A = None
+
+        monos = _find_groups_by_nx_class(inst, "NXmonochromator")
+        if not monos:
+            for name in ("monochromator", "mono", "dcm"):
+                if name in inst and isinstance(inst[name], h5py.Group):
+                    monos = [inst[name]]
+                    break
+
+        if monos:
+            mono = monos[0]
+            e_ds = _find_nxs_dataset(mono, "energy")
+            if e_ds is not None:
+                e_val = _nxs_scalar(e_ds)
+                units = e_ds.attrs.get("units", b"keV")
+                units_str = (
+                    units.decode() if isinstance(units, bytes) else str(units)
+                ).lower()
+                if "ev" in units_str and "kev" not in units_str:
+                    e_val *= 1e-3
+                energy_keV = e_val
+
+            w_ds = _find_nxs_dataset(mono, "wavelength")
+            if w_ds is not None:
+                w_val = _nxs_scalar(w_ds)
+                units = w_ds.attrs.get("units", b"angstrom")
+                units_str = (
+                    units.decode() if isinstance(units, bytes) else str(units)
+                ).lower()
+                if units_str in ("m", "meter", "metre"):
+                    w_val *= 1e10
+                elif units_str in ("nm", "nanometer"):
+                    w_val *= 10.0
+                wavelength_A = w_val
+
+        if energy_keV is None:
+            for ds_name in ("energy", "beam_energy"):
+                ds = _find_nxs_dataset(inst, ds_name)
+                if ds is None:
+                    ds = _find_nxs_dataset(entry, ds_name)
+                if ds is not None:
+                    energy_keV = _nxs_scalar(ds)
+                    break
+
+        if wavelength_A is None and energy_keV is not None:
+            wavelength_A = HC_KEV_A / energy_keV
+        elif energy_keV is None and wavelength_A is not None:
+            energy_keV = HC_KEV_A / wavelength_A
+
+        return energy_keV, wavelength_A
+
+    # -----------------------------------------------------------------
+    # Crystal / UB extraction
+    # -----------------------------------------------------------------
+
+    def _extract_ub(self, entry: h5py.Group) -> np.ndarray:
+        samples = _find_groups_by_nx_class(entry, "NXsample")
+        if not samples:
+            for name in ("sample",):
+                if name in entry and isinstance(entry[name], h5py.Group):
+                    samples = [entry[name]]
+                    break
+
+        if samples:
+            sample = samples[0]
+            for key in (
+                "orientation_matrix",
+                "ub_matrix",
+                "UB",
+                "UB_matrix",
+                "ub",
+            ):
+                if key in sample:
+                    arr = _read_nxs_array(sample[key])
+                    # Per-frame UBs: shape (N, 3, 3) → return first
+                    if arr.ndim == 3 and arr.shape[1:] == (3, 3):
+                        return arr[0].astype(np.float64)
+                    if arr.size == 9:
+                        return arr.reshape(3, 3).astype(np.float64)
+
+            for sub_name in sample:
+                sub = sample[sub_name]
+                if isinstance(sub, h5py.Group):
+                    for key in ("orientation_matrix", "ub_matrix", "UB"):
+                        if key in sub:
+                            arr = _read_nxs_array(sub[key])
+                            if arr.ndim == 3 and arr.shape[1:] == (3, 3):
+                                return arr[0].astype(np.float64)
+                            if arr.size == 9:
+                                return arr.reshape(3, 3).astype(np.float64)
+
+        logger.info("UB matrix not found in NeXus file; using identity.")
+        return np.eye(3, dtype=np.float64)
+
+    def extract_crystal_info(self, entry: h5py.Group) -> dict[str, Any]:
+        """Extract crystal lattice parameters from the sample group."""
+        info: dict[str, Any] = {}
+        samples = _find_groups_by_nx_class(entry, "NXsample")
+        if not samples:
+            return info
+
+        sample = samples[0]
+        for key in ("unit_cell", "unit_cell_abc", "lattice_parameters"):
+            if key in sample:
+                arr = _read_nxs_array(sample[key])
+                if arr.size >= 6:
+                    info["a"], info["b"], info["c"] = arr[0], arr[1], arr[2]
+                    info["alpha"], info["beta"], info["gamma"] = (
+                        arr[3],
+                        arr[4],
+                        arr[5],
+                    )
+                    break
+
+        for param in ("a", "b", "c", "alpha", "beta", "gamma"):
+            if param not in info and param in sample:
+                info[param] = float(_nxs_scalar(sample[param]))
+
+        if "name" in sample:
+            val = sample["name"][()]
+            if isinstance(val, bytes):
+                val = val.decode()
+            info["name"] = str(val)
+
+        return info
+
+    # -----------------------------------------------------------------
+    # Motor discovery
+    # -----------------------------------------------------------------
+
+    def _discover_motors(
+        self, f: h5py.File, entry: h5py.Group
+    ) -> dict[str, np.ndarray]:
+        motors: dict[str, np.ndarray] = {}
+
+        for canon, path in self.motor_map.items():
+            canon_resolved = _resolve_motor_name(canon) or canon
+            if path in f:
+                motors[canon_resolved] = _read_nxs_array(f[path])
+
+        if motors:
+            return motors
+
+        inspector = NexusFileInspector(f)
+        discovered = inspector._discover_motors(entry)
+
+        for canon, path in discovered.items():
+            if canon not in motors and path in f:
+                motors[canon] = _read_nxs_array(f[path])
+
+        return motors
+
+    # -----------------------------------------------------------------
+    # Scan-scheme detection
+    # -----------------------------------------------------------------
+
+    def _detect_scheme(self, motors: dict[str, np.ndarray]) -> ScanScheme:
+        if self._scan_scheme is not None:
+            return self._scan_scheme
+
+        motor_names = set(motors.keys())
+
+        six_circle_motors = {"omega", "chi", "phi", "delta", "nu"}
+        if six_circle_motors.issubset(motor_names) or (
+            "mu" in motor_names and "delta" in motor_names
+        ):
+            return ScanScheme.SIX_CIRCLE
+
+        four_circle_motors = {"omega", "chi", "phi", "tth"}
+        if four_circle_motors.issubset(motor_names):
+            return ScanScheme.FOUR_CIRCLE
+
+        if motor_names & {"omega", "phi", "tth", "chi"}:
+            return ScanScheme.ANGULAR_SCAN
+
+        return ScanScheme.UNKNOWN
+
+    # -----------------------------------------------------------------
+    # Frame extraction
+    # -----------------------------------------------------------------
+
+    def _find_data_dataset(
+        self, det: h5py.Group | None, entry: h5py.Group
+    ) -> h5py.Dataset | None:
+        if self.data_key and det is not None and self.data_key in det:
+            return det[self.data_key]
+
+        keys = list(self._DATA_KEYS)
+        if self.data_key:
+            keys.insert(0, self.data_key)
+
+        if det is not None:
+            for k in keys:
+                if k in det and isinstance(det[k], h5py.Dataset):
+                    ds = det[k]
+                    if ds.ndim >= 2:
+                        return ds
+
+        for dg in _find_groups_by_nx_class(entry, "NXdata"):
+            signal_name = dg.attrs.get("signal")
+            if signal_name is not None:
+                if isinstance(signal_name, bytes):
+                    signal_name = signal_name.decode()
+                if signal_name in dg and isinstance(
+                    dg[signal_name], h5py.Dataset
+                ):
+                    ds = dg[signal_name]
+                    if ds.ndim >= 2:
+                        return ds
+            for k in keys:
+                if k in dg and isinstance(dg[k], h5py.Dataset):
+                    ds = dg[k]
+                    if ds.ndim >= 2:
+                        return ds
+
+        for path_template in [
+            "data/data",
+            "instrument/detector/data",
+            "instrument/det/data",
+        ]:
+            full_path = f"{entry.name}/{path_template}"
+            if full_path in entry.file and isinstance(
+                entry.file[full_path], h5py.Dataset
+            ):
+                return entry.file[full_path]
+
+        return None
+
+    def _extract_frames(
+        self, entry: h5py.Group
+    ) -> tuple[list[np.ndarray], list[int]]:
+        instruments = _find_groups_by_nx_class(entry, "NXinstrument")
+        inst = instruments[0] if instruments else entry
+        det = self._find_detector(inst, entry)
+        data_ds = self._find_data_dataset(det, entry)
+
+        if data_ds is None:
+            raise ValueError(
+                "Could not locate detector image data in the NeXus file. "
+                "Try specifying detector_path and data_key explicitly."
+            )
+
+        raw = data_ds[()]
+        if raw.ndim == 2:
+            frames = [np.squeeze(raw)]
+            indices = [0]
+        elif raw.ndim == 3:
+            n = raw.shape[0]
+            frames = [np.squeeze(raw[i]) for i in range(n)]
+            indices = list(range(n))
+        else:
+            raise ValueError(
+                f"Unexpected detector data dimensionality: {raw.ndim}"
+            )
+
+        return frames, indices
+
+    # -----------------------------------------------------------------
+    # DataFrame construction
+    # -----------------------------------------------------------------
+
+    def _build_dataframe(
+        self,
+        frames: list[np.ndarray],
+        indices: list[int],
+        motors: dict[str, np.ndarray],
+        scheme: ScanScheme,
+        entry: h5py.Group,
+    ) -> pd.DataFrame:
+        n_frames = len(frames)
+
+        scan_numbers = np.ones(n_frames, dtype=int)
+        scan_ds = _find_nxs_dataset(entry, "scan_number", "scan_index")
+        if scan_ds is not None:
+            sn = _read_nxs_array(scan_ds)
+            if sn.size == n_frames:
+                scan_numbers = sn.astype(int)
+
+        def _get_motor(name: str) -> np.ndarray:
+            if name in motors:
+                arr = motors[name]
+                if arr.ndim == 0:
+                    return np.full(n_frames, float(arr))
+                if arr.size == 1:
+                    return np.full(n_frames, float(arr.flat[0]))
+                if arr.size >= n_frames:
+                    return arr[:n_frames].astype(float)
+                padded = np.full(n_frames, float(arr[-1]))
+                padded[: arr.size] = arr
+                return padded
+            return np.zeros(n_frames, dtype=float)
+
+        records: dict[str, Any] = {
+            "scan_number": scan_numbers,
+            "data_number": np.array(indices, dtype=int),
+            "intensity": frames,
+            "tth": _get_motor("tth"),
+            "th": _get_motor("omega"),
+            "chi": _get_motor("chi"),
+            "phi": _get_motor("phi"),
+        }
+
+        for hkl_key in ("h", "k", "l"):
+            ds = _find_nxs_dataset(entry, hkl_key, hkl_key.upper())
+            if ds is not None:
+                arr = _read_nxs_array(ds)
+                if arr.size >= n_frames:
+                    records[hkl_key] = arr[:n_frames].astype(float)
+
+        if scheme == ScanScheme.SIX_CIRCLE:
+            records["mu"] = _get_motor("mu")
+            records["delta"] = _get_motor("delta")
+            records["nu"] = _get_motor("nu")
+
+        records["type"] = scheme.value
+        records["scan_scheme"] = scheme.value
+
+        # Per-frame UB matrices (stored as N×3×3 in the sample group)
+        samples = _find_groups_by_nx_class(entry, "NXsample")
+        if not samples:
+            for name in ("sample",):
+                if name in entry and isinstance(entry[name], h5py.Group):
+                    samples = [entry[name]]
+                    break
+        if samples:
+            sample = samples[0]
+            for key in (
+                "orientation_matrix",
+                "ub_matrix",
+                "UB",
+                "UB_matrix",
+                "ub",
+            ):
+                if key in sample:
+                    ub_arr = _read_nxs_array(sample[key])
+                    if ub_arr.ndim == 3 and ub_arr.shape[1:] == (3, 3):
+                        ub_list: list[np.ndarray | None] = []
+                        for i in range(n_frames):
+                            if i < ub_arr.shape[0]:
+                                ub_list.append(ub_arr[i].astype(np.float64))
+                            else:
+                                ub_list.append(None)
+                        records["ub"] = ub_list
+                    break
+
+        df = pd.DataFrame(records)
+        return df
 
 
 def write_rsm_vtk(polydata, scalar_name, filename):

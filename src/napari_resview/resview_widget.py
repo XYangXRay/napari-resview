@@ -70,6 +70,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from .data_io import (
     RSMDataloader_CMS,
     RSMDataLoader_ISR,
+    RSMDataLoader_Nexus,
     write_rsm_volume_to_vtr,
 )
 from .data_viz import IntensityNapariViewer, RSMNapariViewer
@@ -108,7 +109,7 @@ def yaml_path() -> str:
 
 
 def _default_profile_doc(loader_type: str) -> dict[str, Any]:
-    # One full profile (all sections) so ISR and CMS can diverge fully.
+    # One full profile (all sections) so ISR, CMS, and NeXus can diverge fully.
     return {
         "data": {
             "loader_type": loader_type,
@@ -117,6 +118,10 @@ def _default_profile_doc(loader_type: str) -> dict[str, Any]:
             # ISR-only (still stored in profile so switching restores it)
             "spec_file": None,
             "only_hkl": False,
+            # NeXus-only
+            "nexus_file": None,
+            "nexus_entry": "",
+            "nexus_scheme": "auto",
         },
         "ExperimentSetup": {
             "distance": None,
@@ -434,7 +439,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         # DATA TAB (loader inputs + setup + crop)
         # ---------------------------------------------------------------------
         self.loader_type_w = ComboBox(
-            label="Loader Profile", choices=["ISR", "CMS"]
+            label="Loader Profile", choices=["ISR", "CMS", "NeXus"]
         )
 
         # Common required
@@ -480,6 +485,31 @@ class ResviewDockWidget(QtWidgets.QWidget):
             ],
         )
         self.cms_group = make_group("CMS metadata", cms_container.native)
+
+        # NeXus group
+        self.nexus_file_w = FileEdit(
+            mode="r", label="NeXus file", filter="*.nxs *.h5 *.hdf5"
+        )
+        _ = set_file_button_symbol(self.nexus_file_w, "📂")
+        self.nexus_entry_w = LineEdit(label="Entry (blank=auto)")
+        self.nexus_entry_w.tooltip = (
+            "HDF5 entry path, e.g. /entry1.  Leave blank for auto-detection."
+        )
+        self.nexus_scheme_w = ComboBox(
+            label="Scan Scheme",
+            choices=["auto", "4-circle", "6-circle", "angular_scan"],
+        )
+        self.nexus_scheme_w.value = "auto"
+
+        nexus_container = Container(
+            layout="vertical",
+            widgets=[
+                self.nexus_file_w,
+                self.nexus_entry_w,
+                self.nexus_scheme_w,
+            ],
+        )
+        self.nexus_group = make_group("NeXus metadata", nexus_container.native)
 
         # Experiment setup
         self.distance_w = FloatSpinBox(
@@ -584,6 +614,7 @@ class ResviewDockWidget(QtWidgets.QWidget):
         data_lay.addWidget(self.common_group)
         data_lay.addWidget(self.isr_group)
         data_lay.addWidget(self.cms_group)
+        data_lay.addWidget(self.nexus_group)
         data_lay.addWidget(self.setup_group)
         data_lay.addWidget(btn_row1)
         data_lay.addWidget(self.crop_group)
@@ -1115,6 +1146,9 @@ class ResviewDockWidget(QtWidgets.QWidget):
                 "spec_file": self.spec_file_w,
                 "only_hkl": self.only_hkl_w,
                 "cms_angle_step": self.angle_step_w,
+                "nexus_file": self.nexus_file_w,
+                "nexus_entry": self.nexus_entry_w,
+                "nexus_scheme": self.nexus_scheme_w,
             },
             "ExperimentSetup": {
                 "distance": self.distance_w,
@@ -1402,8 +1436,14 @@ class ResviewDockWidget(QtWidgets.QWidget):
     def _update_loader_visibility(self) -> None:
         choice = str(self.loader_type_w.value or "ISR").upper()
         is_cms = choice.startswith("CMS")
-        self.isr_group.setVisible(not is_cms)
+        is_nexus = choice.startswith("NEXUS") or choice == "NEXUS"
+        is_isr = not is_cms and not is_nexus
+        self.isr_group.setVisible(is_isr)
         self.cms_group.setVisible(is_cms)
+        self.nexus_group.setVisible(is_nexus)
+        # NeXus files are self-contained: hide common data/setup groups
+        self.common_group.setVisible(not is_nexus)
+        self.setup_group.setVisible(not is_nexus)
 
     # -------------------------------------------------------------------------
     # YAML binding helpers (profile-aware)
@@ -1635,7 +1675,18 @@ class ResviewDockWidget(QtWidgets.QWidget):
         # by explicitly using a profile-aware YAML path or section
         yaml_file = yaml_path()
 
-        if loader_name.startswith("CMS"):
+        if loader_name.upper().startswith("NEXUS"):
+            nexus_file = str(self.nexus_file_w.value or "").strip()
+            entry = str(self.nexus_entry_w.value or "").strip() or None
+            scheme_val = str(self.nexus_scheme_w.value or "auto").strip()
+            scan_scheme = None if scheme_val == "auto" else scheme_val
+            loader = RSMDataLoader_Nexus(
+                nexus_file,
+                entry=entry,
+                selected_scans=scans or None,
+                scan_scheme=scan_scheme,
+            )
+        elif loader_name.startswith("CMS"):
             loader = RSMDataloader_CMS(
                 yaml_file,
                 dpath,
