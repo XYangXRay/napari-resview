@@ -24,6 +24,13 @@ try:
 except ImportError:
     DASK_AVAILABLE = False
 
+try:
+    import tiled  # noqa: F401
+
+    TILED_AVAILABLE = True
+except ImportError:
+    TILED_AVAILABLE = False
+
 from .spec_parser import SpecParser
 
 logger = logging.getLogger(__name__)
@@ -291,6 +298,324 @@ class RSMDataloader_CMS:
                 "chi": 0.0,
                 "phi": 0.0,  # always zero for CMS
             }
+        )
+
+        UB = np.eye(3, dtype=float)
+        return setup, UB, df
+
+
+class RSMDataloader_CMS_Tiled:
+    """
+    Load CMS beamline data directly from a Tiled catalog / server.
+
+    This mirrors :class:`RSMDataloader_CMS` but sources detector frames and
+    motor positions from Tiled (Bluesky) runs instead of TIFF files on disk.
+    It returns the same ``(setup, UB, df)`` triple, where ``df`` has the
+    columns ``scan_number, intensity, tth, th, chi, phi``.
+
+    Connection
+    ----------
+    Provide either a live Tiled node via ``catalog`` (already navigated to the
+    container that holds the runs), or a server ``uri`` together with
+    ``catalog_path`` (the sequence of keys used to reach the run container,
+    e.g. ``("cms", "raw")``).
+
+    Parameters
+    ----------
+    setup_file : str
+        YAML file with the ``ExperimentSetup`` parameters.
+    catalog : tiled node, optional
+        A pre-connected Tiled container of Bluesky runs. Takes precedence over
+        ``uri``.
+    uri : str, optional
+        Tiled server URI (e.g. ``"https://tiled.nsls2.bnl.gov"``). Used only
+        when ``catalog`` is not supplied.
+    api_key : str, optional
+        API key forwarded to ``tiled.client.from_uri`` when connecting.
+    catalog_path : sequence of str, optional
+        Keys applied in order to the connected client to reach the run
+        container. Defaults to ``("cms", "raw")``.
+    selected_scans : int | Iterable[int] | str | Iterable[str] | None
+        Scan identifiers to load. Integers are matched against each run's
+        ``scan_id`` metadata; strings are treated as run keys / uids. *None*
+        loads every run in the container.
+    detector : str, optional
+        Name of the detector image field inside the data stream. *None*
+        auto-detects a field whose key ends with ``_image`` (falling back to
+        the first image-like array).
+    stream : str, optional
+        Name of the event stream that holds the detector frames. Defaults to
+        ``"primary"``.
+    motor_map : dict, optional
+        Explicit ``{canonical: tiled_key}`` overrides for the ``tth``, ``th``,
+        ``chi`` and ``phi`` angles.
+    crop_window : ((r0, r1), (c0, c1)), optional
+        Optional row/column crop applied to every frame.
+    angle_step : float, optional
+        Fallback rocking-angle increment used to synthesize ``th`` when no
+        angle can be read from the runs. Defaults to ``1.0``.
+    """
+
+    _MOTOR_CANDIDATES = {
+        "tth": ("tth", "vtth", "det_tth", "detector_tth", "two_theta"),
+        "th": ("th", "vth", "theta", "sample_th", "gid_th"),
+        "chi": ("chi", "sample_chi"),
+        "phi": ("phi", "sample_phi"),
+    }
+
+    def __init__(
+        self,
+        setup_file: str,
+        catalog: Any = None,
+        *,
+        uri: str | None = None,
+        api_key: str | None = None,
+        catalog_path: Tuple[str, ...] = ("cms", "raw"),
+        selected_scans=None,
+        detector: str | None = None,
+        stream: str = "primary",
+        motor_map: dict[str, str] | None = None,
+        crop_window: Tuple[Tuple[int, int], Tuple[int, int]] | None = None,
+        angle_step: float = 1.0,
+    ):
+        self.setup_file = setup_file
+        self.catalog = catalog
+        self.uri = uri
+        self.api_key = api_key
+        self.catalog_path = tuple(catalog_path)
+        self.selected_scans = selected_scans
+        self.detector = detector
+        self.stream = stream
+        self.motor_map = motor_map or {}
+        self.crop_window = crop_window
+        self.angle_step = float(angle_step)
+
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
+    def _connect(self):
+        if self.catalog is not None:
+            return self.catalog
+
+        if not TILED_AVAILABLE:
+            raise ImportError(
+                "The 'tiled' package is required to load CMS data over Tiled. "
+                "Install it with `pip install tiled[client]`."
+            )
+        if not self.uri:
+            raise ValueError(
+                "RSMDataloader_CMS_Tiled: provide either a 'catalog' node or a "
+                "server 'uri'."
+            )
+
+        from tiled.client import from_uri
+
+        kwargs = {"api_key": self.api_key} if self.api_key else {}
+        node = from_uri(self.uri, **kwargs)
+        for key in self.catalog_path:
+            node = node[key]
+        return node
+
+    # ------------------------------------------------------------------
+    # Run selection
+    # ------------------------------------------------------------------
+    def _iter_runs(self, catalog):
+        """Yield ``(scan_number, run)`` pairs honoring ``selected_scans``."""
+        if self.selected_scans is None:
+            for key in catalog:
+                run = catalog[key]
+                yield self._run_scan_number(run, key), run
+            return
+
+        if isinstance(self.selected_scans, (str, numbers.Integral)):
+            requested = [self.selected_scans]
+        else:
+            requested = list(self.selected_scans)
+
+        for item in requested:
+            run = self._lookup_run(catalog, item)
+            if run is None:
+                raise ValueError(
+                    f"RSMDataloader_CMS_Tiled: no run found for scan {item!r}."
+                )
+            yield self._run_scan_number(run, item), run
+
+    def _lookup_run(self, catalog, item):
+        # String → treat as a direct key / uid first.
+        if isinstance(item, str):
+            try:
+                return catalog[item]
+            except KeyError:
+                pass
+
+        # Integer (or numeric string) → search by scan_id metadata.
+        try:
+            scan_id = int(item)
+        except (TypeError, ValueError):
+            return None
+
+        try:
+            from tiled.queries import Key
+
+            matches = catalog.search(Key("scan_id") == scan_id)
+            if len(matches):
+                return matches.values().last()
+        except Exception:  # pragma: no cover - search not always available
+            logger.debug("Tiled scan_id search failed for %s", scan_id)
+
+        # Fallback: linear scan of metadata.
+        for key in catalog:
+            run = catalog[key]
+            if self._run_scan_number(run, None) == scan_id:
+                return run
+        return None
+
+    @staticmethod
+    def _run_scan_number(run, fallback):
+        meta = getattr(run, "metadata", {}) or {}
+        start = meta.get("start", meta) if isinstance(meta, dict) else {}
+        for source in (start, meta):
+            if isinstance(source, dict) and "scan_id" in source:
+                with contextlib.suppress(TypeError, ValueError):
+                    return int(source["scan_id"])
+        with contextlib.suppress(TypeError, ValueError):
+            return int(fallback)
+        return -1
+
+    # ------------------------------------------------------------------
+    # Data extraction
+    # ------------------------------------------------------------------
+    def _get_stream_data(self, run):
+        stream = run[self.stream]
+        # Bluesky runs expose an events dataset under "data".
+        if "data" in stream:
+            return stream["data"]
+        return stream
+
+    def _detect_detector_key(self, data) -> str:
+        if self.detector is not None:
+            return self.detector
+        keys = list(data)
+        for key in keys:
+            if key.endswith("_image") or key.endswith("_image_data"):
+                return key
+        # Fallback: first field whose per-event value is 2-D or higher.
+        for key in keys:
+            try:
+                shape = data[key].shape
+            except Exception:
+                continue
+            if len(shape) >= 3:
+                return key
+        raise ValueError(
+            "RSMDataloader_CMS_Tiled: could not identify a detector image "
+            "field; pass 'detector' explicitly."
+        )
+
+    @staticmethod
+    def _read_frames(data, det_key) -> np.ndarray:
+        arr = np.asarray(data[det_key][:])
+        # Collapse any extra leading dimensions (e.g. (n_events, 1, H, W)).
+        while arr.ndim > 3:
+            arr = arr.reshape((-1,) + arr.shape[2:])
+        if arr.ndim == 2:
+            arr = arr[np.newaxis, ...]
+        return arr
+
+    def _read_motor(self, run, data, canonical: str, n_frames: int):
+        key = self.motor_map.get(canonical)
+        candidates = (key,) if key else self._MOTOR_CANDIDATES[canonical]
+
+        for cand in candidates:
+            if cand and cand in data:
+                with contextlib.suppress(Exception):
+                    vals = np.asarray(data[cand][:], dtype=float).ravel()
+                    if vals.size == n_frames:
+                        return vals
+                    if vals.size == 1:
+                        return np.full(n_frames, float(vals[0]))
+
+        # Baseline stream often stores static motor positions.
+        with contextlib.suppress(Exception):
+            base = run["baseline"]["data"]
+            for cand in candidates:
+                if cand and cand in base:
+                    vals = np.asarray(base[cand][:], dtype=float).ravel()
+                    if vals.size:
+                        return np.full(n_frames, float(vals[0]))
+
+        # Start-document metadata scalar.
+        meta = getattr(run, "metadata", {}) or {}
+        start = meta.get("start", {}) if isinstance(meta, dict) else {}
+        for cand in candidates:
+            if cand and isinstance(start, dict) and cand in start:
+                with contextlib.suppress(TypeError, ValueError):
+                    return np.full(n_frames, float(start[cand]))
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Load
+    # ------------------------------------------------------------------
+    def load(self):
+        setup = ExperimentSetup.from_yaml(self.setup_file)
+        catalog = self._connect()
+
+        scan_numbers: list[int] = []
+        intensities: list[np.ndarray] = []
+        tth_all: list[float] = []
+        th_all: list[float] = []
+        chi_all: list[float] = []
+        phi_all: list[float] = []
+
+        for scan_number, run in self._iter_runs(catalog):
+            data = self._get_stream_data(run)
+            det_key = self._detect_detector_key(data)
+            frames = self._read_frames(data, det_key)
+            n = frames.shape[0]
+
+            tth = self._read_motor(run, data, "tth", n)
+            th = self._read_motor(run, data, "th", n)
+            chi = self._read_motor(run, data, "chi", n)
+            phi = self._read_motor(run, data, "phi", n)
+
+            for i in range(n):
+                img = frames[i]
+                if self.crop_window is not None:
+                    img = RSMDataloader_CMS._crop_image(img, self.crop_window)
+                intensities.append(np.asarray(img))
+                scan_numbers.append(int(scan_number))
+                tth_all.append(float(tth[i]) if tth is not None else 0.0)
+                th_all.append(float(th[i]) if th is not None else np.nan)
+                chi_all.append(float(chi[i]) if chi is not None else 0.0)
+                phi_all.append(float(phi[i]) if phi is not None else 0.0)
+
+        if not intensities:
+            raise ValueError(
+                "RSMDataloader_CMS_Tiled: no detector frames were loaded."
+            )
+
+        th_arr = np.asarray(th_all, dtype=float)
+        # Synthesize a rocking angle when none could be read from the runs.
+        if np.all(np.isnan(th_arr)):
+            scan_arr = np.asarray(scan_numbers, dtype=float)
+            first = np.nanmin(scan_arr)
+            th_arr = (scan_arr - first) * self.angle_step
+        else:
+            th_arr = np.where(np.isnan(th_arr), 0.0, th_arr)
+
+        df = pd.DataFrame(
+            {
+                "scan_number": scan_numbers,
+                "intensity": intensities,
+                "tth": tth_all,
+                "th": th_arr,
+                "chi": chi_all,
+                "phi": phi_all,
+            }
+        )
+        df = df.sort_values("scan_number", kind="stable").reset_index(
+            drop=True
         )
 
         UB = np.eye(3, dtype=float)
